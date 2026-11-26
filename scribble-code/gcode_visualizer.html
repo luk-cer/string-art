@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pen Plotter G-Code Simulator</title>
+    <style>
+        body { font-family: sans-serif; background: #1a1a1a; color: #eee; display: flex; flex-direction: column; align-items: center; margin: 0; padding: 20px; }
+        .controls { background: #333; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; gap: 15px; align-items: center; flex-wrap: wrap; }
+        canvas { background: #fff; border: 2px solid #555; box-shadow: 0 0 20px rgba(0,0,0,0.5); max-width: 90vw; max-height: 70vh; }
+        .stats { margin-top: 10px; font-family: monospace; color: #aaa; }
+        button { padding: 8px 16px; cursor: pointer; background: #4CAF50; border: none; color: white; border-radius: 4px; }
+        button:hover { background: #45a049; }
+        input[type="file"] { color: #ccc; }
+    </style>
+</head>
+<body>
+
+    <h2>Plotter Simulation</h2>
+
+    <div class="controls">
+        <input type="file" id="fileInput" accept=".gcode,.nc,.txt">
+        <button id="playBtn">Play</button>
+        <label>Speed: <input type="range" id="speedRange" min="1" max="50" value="10"></label>
+        <span id="status">Upload a file...</span>
+    </div>
+
+    <canvas id="plotCanvas"></canvas>
+    
+    <div class="stats" id="stats">
+        Lines: 0 | Estimated Real Time: 0s
+    </div>
+
+<script>
+    const canvas = document.getElementById('plotCanvas');
+    const ctx = canvas.getContext('2d');
+    const fileInput = document.getElementById('fileInput');
+    const playBtn = document.getElementById('playBtn');
+    const speedRange = document.getElementById('speedRange');
+    const status = document.getElementById('status');
+    const statsDiv = document.getElementById('stats');
+
+    let commands = [];
+    let animationId = null;
+    let currentIndex = 0;
+    let lastPos = { x: 0, y: 0, z: 5 };
+    let bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    let scale = 1;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    fileInput.addEventListener('change', handleFile);
+    playBtn.addEventListener('click', () => { currentIndex = 0; startSimulation(); });
+
+    function handleFile(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            parseGCode(event.target.result);
+            setupCanvas();
+            drawStaticBackground();
+        };
+        reader.readAsText(file);
+    }
+
+    function parseGCode(text) {
+        commands = [];
+        const lines = text.split('\n');
+        let curX = 0, curY = 0, curZ = 5;
+
+        lines.forEach(line => {
+            const cmd = {};
+            const parts = line.split(';')[0].toUpperCase().trim().split(/\s+/);
+            if (parts[0] === 'G0' || parts[0] === 'G1' || parts[0] === 'G2' || parts[0] === 'G3') {
+                cmd.type = parts[0];
+                parts.forEach(p => {
+                    const val = parseFloat(p.substring(1));
+                    if (p.startsWith('X')) cmd.x = val;
+                    if (p.startsWith('Y')) cmd.y = val;
+                    if (p.startsWith('Z')) cmd.z = val;
+                    if (p.startsWith('I')) cmd.i = val;
+                    if (p.startsWith('J')) cmd.j = val;
+                });
+
+                // Update bounds
+                if (cmd.x !== undefined) {
+                    bounds.minX = Math.min(bounds.minX, cmd.x);
+                    bounds.maxX = Math.max(bounds.maxX, cmd.x);
+                }
+                if (cmd.y !== undefined) {
+                    bounds.minY = Math.min(bounds.minY, cmd.y);
+                    bounds.maxY = Math.max(bounds.maxY, cmd.y);
+                }
+                
+                cmd.start = { x: curX, y: curY, z: curZ };
+                if (cmd.x !== undefined) curX = cmd.x;
+                if (cmd.y !== undefined) curY = cmd.y;
+                if (cmd.z !== undefined) curZ = cmd.z;
+                cmd.end = { x: curX, y: curY, z: curZ };
+                
+                commands.push(cmd);
+            } else if (parts[0] === 'G4') {
+                commands.push({ type: 'WAIT', ms: 15 });
+            }
+        });
+        status.innerText = "File loaded. Ready.";
+        statsDiv.innerText = `Segments: ${commands.length} | Bounds: ${bounds.maxX - bounds.minX}x${bounds.maxY - bounds.minY}mm`;
+    }
+
+    function setupCanvas() {
+        const padding = 40;
+        const width = bounds.maxX - bounds.minX;
+        const height = bounds.maxY - bounds.minY;
+        
+        canvas.width = 800;
+        canvas.height = (height / width) * 800;
+
+        scale = (canvas.width - padding * 2) / width;
+        offsetX = -bounds.minX * scale + padding;
+        offsetY = canvas.height + (bounds.minY * scale) - padding; // Flip Y for screen
+    }
+
+    function toScreen(x, y) {
+        return {
+            x: x * scale + offsetX,
+            y: offsetY - (y * scale) 
+        };
+    }
+
+    function drawStaticBackground() {
+        ctx.fillStyle = "white";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        // Draw Grid
+        ctx.strokeStyle = "#eee";
+        ctx.beginPath();
+        for(let i=0; i<canvas.width; i+=20) { ctx.moveTo(i,0); ctx.lineTo(i,canvas.height); }
+        for(let i=0; i<canvas.height; i+=20) { ctx.moveTo(0,i); ctx.lineTo(canvas.width,i); }
+        ctx.stroke();
+    }
+
+    function startSimulation() {
+        if (animationId) cancelAnimationFrame(animationId);
+        drawStaticBackground();
+        currentIndex = 0;
+        animate();
+    }
+
+    function animate() {
+        const speed = parseInt(speedRange.value);
+        
+        for (let i = 0; i < speed; i++) {
+            if (currentIndex >= commands.length) {
+                status.innerText = "Simulation Finished.";
+                return;
+            }
+
+            const cmd = commands[currentIndex];
+            const p1 = toScreen(cmd.start.x, cmd.start.y);
+            const p2 = toScreen(cmd.end.x, cmd.end.y);
+
+            if (cmd.type === 'G0' || cmd.type === 'G1') {
+                ctx.beginPath();
+                ctx.moveTo(p1.x, p1.y);
+                ctx.lineTo(p2.x, p2.y);
+                ctx.strokeStyle = (cmd.end.z > 0) ? "rgba(255, 0, 0, 0.2)" : "blue";
+                ctx.setLineDash((cmd.end.z > 0) ? [5, 5] : []);
+                ctx.lineWidth = (cmd.end.z > 0) ? 1 : 2;
+                ctx.stroke();
+            } else if (cmd.type === 'G2' || cmd.type === 'G3') {
+                const cx = cmd.start.x + (cmd.i || 0);
+                const cy = cmd.start.y + (cmd.j || 0);
+                const radius = Math.sqrt(Math.pow(cmd.i || 0, 2) + Math.pow(cmd.j || 0, 2));
+                const startAngle = Math.atan2(cmd.start.y - cy, cmd.start.x - cx);
+                const endAngle = Math.atan2(cmd.end.y - cy, cmd.end.x - cx);
+                
+                const center = toScreen(cx, cy);
+                ctx.beginPath();
+                ctx.arc(center.x, center.y, radius * scale, -startAngle, -endAngle, cmd.type === 'G2');
+                ctx.strokeStyle = "blue";
+                ctx.setLineDash([]);
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+            
+            currentIndex++;
+        }
+        status.innerText = `Plotting... ${Math.round((currentIndex/commands.length)*100)}%`;
+        animationId = requestAnimationFrame(animate);
+    }
+</script>
+</body>
+</html>
