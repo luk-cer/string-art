@@ -102,19 +102,28 @@ def cmd_hatch(args):
 
 
 def cmd_scribble(args):
-    from .scribble import ScribbleConfig
-    angles = tuple(tuple(float(v) for v in a.split(":")) for a in args.hatch_angles.split(","))
-    cfg = ScribbleConfig(
-        paper=args.paper, portrait=args.portrait, padding_mm=args.padding, pen_mm=args.pen,
-        rotate=args.rotate, max_side=args.max_side, crop=tuple(args.crop) if args.crop else None,
-        gradient_threshold=args.gradient_threshold, cleanup_radius=args.cleanup_radius,
-        max_lines=args.max_lines, light_percentile=args.light_percentile,
-        trace_kernel_size=args.kernel, trace_kernel_sigma=args.sigma, remove_noise=args.denoise,
-        hatch=not args.no_hatch, hatch_sample_interval=args.hatch_interval,
-        hatch_max_length=args.hatch_max_length, hatch_angles=angles,
-        simplify_px=args.simplify, join_px=args.join, sampler=args.sampler,
-        workers=args.workers, seed=args.seed,
-    )
+    from .scribble import preset
+    # flags left unset fall back to the chosen preset (c_v25 / app5 / app7)
+    m = {"padding": "padding_mm", "pen": "pen_mm", "kernel": "trace_kernel_size",
+         "sigma": "trace_kernel_sigma", "hatch_interval": "hatch_sample_interval",
+         "simplify": "simplify_px", "join": "join_px", "white_cut": "white_cut",
+         "cleanup_mode": "cleanup_mode", "hatch_source": "hatch_source"}
+    keys = ["paper", "rotate", "max_side", "gradient_threshold", "cleanup_radius", "max_lines",
+            "light_percentile", "hatch_max_length", "sampler", "workers", "seed"] + list(m)
+    over = {m.get(k, k): getattr(args, k) for k in keys if getattr(args, k) is not None}
+    if args.portrait:
+        over["portrait"] = True
+    if args.crop:
+        over["crop"] = tuple(args.crop)
+    if args.denoise:
+        over["remove_noise"] = True
+    if args.no_hatch:
+        over["hatch"] = False
+    if args.hatch_angles:
+        over["hatch_angles"] = tuple(tuple(float(v) for v in a.split(":")) for a in args.hatch_angles.split(","))
+    over.setdefault("workers", 0)
+    cfg = preset(args.preset, **over)
+    print(f"preset {args.preset}")
     t0 = time.time()
     res = pipeline.build_scribble(args.image, cfg, progress=print)
     prof = _profile(args)
@@ -240,31 +249,36 @@ def main(argv=None):
     c = sub.add_parser("scribble", help="gradient-tracing scribble (fast port of scribble-code/c_v25)")
     c.add_argument("image")
     c.add_argument("-o", "--output", default="out/scribble")
-    c.add_argument("--paper", default="A4", choices=list(PAPER_SIZES))
+    c.add_argument("--preset", default="c_v25", choices=["c_v25", "app5", "app7"],
+                   help="c_v25: even texture; app5: high contrast, white highlights, least ink; "
+                        "app7: like app5, denser hatching. Flags below override the preset.")
+    c.add_argument("--paper", choices=list(PAPER_SIZES), help="default A4")
     c.add_argument("--portrait", action="store_true")
-    c.add_argument("--padding", type=float, default=20.0)
-    c.add_argument("--pen", type=float, default=0.3)
-    c.add_argument("--rotate", default="auto", choices=["auto", "none", "90"])
+    c.add_argument("--padding", type=float, help="mm, default 20")
+    c.add_argument("--pen", type=float, help="mm, default 0.3")
+    c.add_argument("--rotate", choices=["auto", "none", "90"], help="default auto")
     c.add_argument("--max-side", type=int, help="downscale so the longer side is at most N px "
                    "(controls line density on paper: aim for >= pen width per pixel)")
     c.add_argument("--crop", type=int, nargs=4, metavar=("X", "Y", "W", "H"))
-    c.add_argument("--gradient-threshold", type=float, default=0.05)
-    c.add_argument("--cleanup-radius", type=int, default=4)
-    c.add_argument("--max-lines", type=int, default=10000)
-    c.add_argument("--light-percentile", type=float, default=1.0)
-    c.add_argument("--kernel", type=int, default=4, help="trace kernel size d")
-    c.add_argument("--sigma", type=float, default=2.0, help="trace kernel sigma")
+    c.add_argument("--gradient-threshold", type=float)
+    c.add_argument("--cleanup-radius", type=int, help="max gap between main lines in px (c_v25 4, app 20)")
+    c.add_argument("--cleanup-mode", choices=["adaptive", "quadrant"])
+    c.add_argument("--white-cut", type=float, help="0..1: keep areas lighter than this white (app 0.2)")
+    c.add_argument("--max-lines", type=int)
+    c.add_argument("--light-percentile", type=float)
+    c.add_argument("--kernel", type=int, help="trace kernel size d")
+    c.add_argument("--sigma", type=float, help="trace kernel sigma")
     c.add_argument("--denoise", action="store_true", help="non-local-means denoise first (slow)")
     c.add_argument("--no-hatch", action="store_true")
-    c.add_argument("--hatch-interval", type=int, default=10)
-    c.add_argument("--hatch-max-length", type=int, default=150)
-    c.add_argument("--hatch-angles", default="210:0.5,150:0.7,240:0.85,120:0.95",
-                   help="angle:min_darkness pairs")
-    c.add_argument("--simplify", type=float, default=0.5, help="RDP tolerance in pixels")
-    c.add_argument("--join", type=float, default=1.5, help="join line ends closer than N px")
-    c.add_argument("--sampler", default="fast", choices=["fast", "exact"])
-    c.add_argument("--workers", type=int, default=0, help="processes for hatching (0 = all cores)")
-    c.add_argument("--seed", type=int, default=0)
+    c.add_argument("--hatch-source", choices=["all", "longest", "merged"])
+    c.add_argument("--hatch-interval", type=int)
+    c.add_argument("--hatch-max-length", type=int)
+    c.add_argument("--hatch-angles", help="angle:min_darkness pairs, e.g. 210:0.5,150:0.7")
+    c.add_argument("--simplify", type=float, help="RDP tolerance in px (default 0.5)")
+    c.add_argument("--join", type=float, help="join line ends closer than N px (default 1.5)")
+    c.add_argument("--sampler", choices=["fast", "exact"])
+    c.add_argument("--workers", type=int, help="processes for hatching (0 = all cores)")
+    c.add_argument("--seed", type=int)
     _add_gcode_args(c)
     c.set_defaults(fn=cmd_scribble)
 

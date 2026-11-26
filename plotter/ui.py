@@ -173,6 +173,10 @@ def make_handler(app):
                 parts = self.path.split("?")[0].strip("/").split("/")
                 if self.path in ("/", "/index.html"):
                     self._send(200, (HERE / "ui_index.html").read_bytes(), "text/html; charset=utf-8")
+                elif parts == ["api", "presets", "scribble"]:
+                    from dataclasses import asdict
+                    from .scribble import ScribbleConfig, PRESETS
+                    self._send(200, {"defaults": asdict(ScribbleConfig()), "presets": PRESETS})
                 elif parts[:2] == ["api", "image"] and len(parts) == 3:
                     self._send(200, app.image_path(parts[2]).read_bytes(), "image/png")
                 elif parts[:2] == ["api", "file"] and len(parts) == 4:

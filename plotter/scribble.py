@@ -55,6 +55,17 @@ class ScribbleConfig:
     hatch_max_length: int = 150
     hatch_angles: tuple = ((210, 0.5), (150, 0.7), (240, 0.85), (120, 0.95))
     hatch_adaptive_spacing: bool = True
+    # variant knobs - see PRESETS (c_v25 defaults; app5 / app7 reproduce those scripts)
+    white_cut: float = 0.0              # darkness below min + cut*range set to 0: light areas stay white
+    cleanup_mode: str = "adaptive"      # adaptive (c_v25 circles) | quadrant (app5/7 boxes sized by darkness)
+    main_max_steps: int = 1000
+    split_main: bool = False            # keep forward/backward halves as separate lines (app5/7)
+    main_min_points: int = 2            # drop main lines shorter than this (app5: 1)
+    main_order: str = "none"            # none | sort (app5) | sort_merge (app7)
+    legacy_gradient_sum: bool = False   # app5/7 compute sum(g * kernel) (~= g); only for bit-exact replay
+    hatch_source: str = "all"           # all (c_v25) | longest (app5: 1000 longest) | merged (app7)
+    hatch_keep_min: int = 4             # keep hatch lines with at least this many points (app5/7: 1)
+    hatch_patch: int | None = None      # look-ahead patch radius for hatching (None = trace_kernel_size; app5/7: 5)
     # post
     min_points: int = 1                 # drop lines with fewer points (c_v25 keeps >1 for main lines)
     # performance
@@ -73,6 +84,73 @@ class ScribbleConfig:
     simplify_px: float = 0.5            # RDP tolerance in source pixels (like c_v25 max_rmse=0.5)
     join_px: float = 1.5                # join line ends closer than this (fewer pen lifts); 0 = off
     min_points_out: int = 5             # drop paths shorter than this many traced points (c_v25: 5)
+
+
+PRESETS = {
+    # scribble-code/c_v25.py __main__ settings
+    "c_v25": {},
+    # scribble-code/app5.py: white cut, sparse quadrant cleanup, hatch from the 1000 longest lines
+    "app5": dict(white_cut=0.2, cleanup_mode="quadrant", cleanup_radius=20, main_max_steps=10000,
+                 min_magnitude_ratio=1e-3, split_main=True, main_min_points=1, main_order="sort",
+                 legacy_gradient_sum=True, hatch_source="longest", hatch_min_line_length=10,
+                 hatch_adaptive_spacing=False, hatch_sample_interval=10, hatch_max_length=10000,
+                 hatch_angles=((225, 0.4), (245, 0.6), (205, 0.75), (265, 0.9)), hatch_keep_min=1,
+                 hatch_patch=5),
+    # scribble-code/app7.py: as app5 but merges main lines first and hatches from all of them
+    "app7": dict(white_cut=0.2, cleanup_mode="quadrant", cleanup_radius=20, main_max_steps=10000,
+                 min_magnitude_ratio=1e-3, split_main=True, main_min_points=2, main_order="sort_merge",
+                 legacy_gradient_sum=True, hatch_source="merged", hatch_min_line_length=5,
+                 hatch_adaptive_spacing=False, hatch_sample_interval=10, hatch_max_length=10000,
+                 hatch_angles=((225, 0.4), (245, 0.6), (205, 0.75), (265, 0.9)), hatch_keep_min=1,
+                 hatch_patch=5),
+}
+
+
+def preset(name, **overrides):
+    """ScribbleConfig for a named preset (c_v25 | app5 | app7) with overrides."""
+    return ScribbleConfig(**{**PRESETS[name], **overrides})
+
+
+def merge_lines(lines):
+    """Port of scribble-code/gcode_utils.merge_lines (Eulerian-style joining of
+    lines that share exact end points), without the prints."""
+    from collections import defaultdict
+    graph = defaultdict(list)
+    degree = defaultdict(int)
+    for idx, line in enumerate(lines):
+        p1, p2 = tuple(line[0]), tuple(line[-1])
+        graph[p1].append({"to": p2, "id": idx, "data": line})
+        graph[p2].append({"to": p1, "id": idx, "data": line[::-1]})
+        degree[p1] += 1
+        degree[p2] += 1
+    used = set()
+    merged = []
+
+    def trace_path(start):
+        path = []
+        curr = start
+        while True:
+            for edge in graph[curr]:
+                if edge["id"] not in used:
+                    used.add(edge["id"])
+                    path.extend(edge["data"] if not path else edge["data"][1:])
+                    curr = edge["to"]
+                    break
+            else:
+                break
+        return path
+
+    nodes = sorted(graph.keys(), key=lambda n: degree[n] % 2, reverse=True)
+    for node in nodes:
+        if degree[node] % 2 != 0:
+            p = trace_path(node)
+            if p:
+                merged.append(p)
+    for node in nodes:
+        p = trace_path(node)
+        if p:
+            merged.append(p)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +224,7 @@ class _Tracer:
             w /= s
         return np.multiply(region, w).sum()
 
-    def trace(self, px, py, angle, gx, gy, max_steps=1000, min_intensity=0.0):
+    def trace(self, px, py, angle, gx, gy, max_steps=1000, min_intensity=0.0, gkernel=None):
         rad = angle * np.pi / 180.0
         crad = np.cos(rad)
         srad = np.sin(rad)
@@ -158,6 +236,8 @@ class _Tracer:
         while -1 < px < H - 1 and -1 < py < W - 1 and unique and step < max_steps:
             cx, cy = int(px), int(py)
             a, b = gx[cx, cy], gy[cx, cy]
+            if gkernel is not None:              # app5/7: np.sum(g[x, y] * w2)
+                a, b = np.sum(a * gkernel), np.sum(b * gkernel)
             g_x = a * crad + b * srad
             g_y = -a * srad + b * crad
             pint = self.direction_intensity(self.region(cx, cy), g_x, g_y)
@@ -202,6 +282,11 @@ class _BlockSampler:
     def refresh(self, flat_idx):
         blocks = np.unique(flat_idx // self.B)
         for b in blocks:
+            self.sums[b] = self.w[b * self.B:(b + 1) * self.B].sum()
+
+    def refresh_range(self, lo, hi):
+        """Refresh blocks covering flat indices lo..hi (inclusive)."""
+        for b in range(lo // self.B, hi // self.B + 1):
             self.sums[b] = self.w[b * self.B:(b + 1) * self.B].sum()
 
     def sample(self):
@@ -253,6 +338,9 @@ class Scribble:
             self.pix = denoise_nl_means(self.pix, h=1.15 * sigma_est, patch_size=7,
                                         patch_distance=11, fast_mode=False)
         self.ipix = 1 - self.pix
+        if c.white_cut > 0:                       # app5/7 (via prob_mask aliasing ipix)
+            ip = self.ipix
+            ip[ip < ip.min() + (ip.max() - ip.min()) * c.white_cut] = 0
         self.edges_x = sobel(self.pix, 0)
         self.edges_y = sobel(self.pix, 1)
         mag = _rescale(np.sqrt(self.edges_x ** 2 + self.edges_y ** 2))
@@ -281,6 +369,7 @@ class Scribble:
             mag /= s
         self.magnitude = mag
         self.tracer = _Tracer(self.ipix, d)
+        self.gk_main = w2 if c.legacy_gradient_sum else None
         self._disks = {}
         return self
 
@@ -326,7 +415,51 @@ class Scribble:
         if self._sampler is not None:
             self._sampler.refresh(flat)
 
+    def _zero_box(self, data, rs, cs, track):
+        H, W = data.shape
+        r0, r1, _ = rs.indices(H)
+        c0, c1, _ = cs.indices(W)
+        if r0 >= r1 or c0 >= c1:
+            return
+        view = data[r0:r1, c0:c1]
+        if track:
+            n = int(np.count_nonzero(view))
+            if not n:
+                return
+            self._nonzero -= n
+            view[...] = 0
+            if self._sampler is not None:
+                self._sampler.refresh_range(r0 * W + c0, (r1 - 1) * W + c1 - 1)
+        else:
+            view[...] = 0
+
+    def _quadrant_cleanup(self, line, data, d, track):
+        """app5/7 gradient_clean_up2: four boxes per point, each sized by the
+        darkest pixel in that quadrant (dark -> 0, light -> d)."""
+        ip = self.ipix
+        mx, my = ip.shape
+        for x, y in line:
+            x, y = int(x), int(y)
+            xdp = max(min(x + d + 1, mx), 1)
+            xdn = max(x - d, 0)
+            ydp = max(min(y + d + 1, my), 1)
+            ydn = max(y - d, 0)
+            pp = int((1 - np.max(ip[x:xdp, y:ydp])) * d)
+            pn = int((1 - np.max(ip[x:xdp, ydn:y + 1])) * d)
+            npp = int((1 - np.max(ip[xdn:x + 1, y:ydp])) * d)
+            nn = int((1 - np.max(ip[xdn:x + 1, ydn:y + 1])) * d)
+            self._zero_box(data, slice(x, x + pp + 1), slice(y, y + pp + 1), track)
+            self._zero_box(data, slice(x, x + pn + 1), slice(y - pn, y + 1), track)
+            self._zero_box(data, slice(x - npp, x + 1), slice(y, y + npp + 1), track)
+            self._zero_box(data, slice(x - nn, x + 1), slice(y - nn, y + 1), track)
+
     def _cleanup_line(self, line):
+        if self.cfg.cleanup_mode == "quadrant":
+            arr = np.asarray(line, dtype=np.int64)
+            self.gx[arr[:, 0], arr[:, 1]] = 0
+            self.gy[arr[:, 0], arr[:, 1]] = 0
+            self._quadrant_cleanup(line, self.magnitude, self.cfg.cleanup_radius, True)
+            return
         arr = np.asarray(line, dtype=np.int64)
         xs, ys = arr[:, 0], arr[:, 1]
         radii = self._adaptive_radii(xs, ys, self.cfg.cleanup_radius)
@@ -362,23 +495,44 @@ class Scribble:
                 break
             px, py = int(pt[0]), int(pt[1])
             if self.ipix[px, py] < 0.01:
-                self._zero_magnitude(np.array([px]), np.array([py]), np.array([3]))
+                if c.cleanup_mode == "quadrant":
+                    self._quadrant_cleanup([(px, py)], self.magnitude, 3, True)
+                else:
+                    self._zero_magnitude(np.array([px]), np.array([py]), np.array([3]))
                 continue
-            fwd = tr.trace(px, py, 90, self.gx, self.gy)
-            bwd = tr.trace(px, py, 270, self.gx, self.gy)
-            line = list(reversed(bwd[1:])) + fwd
-            self.lines.append(line)
-            self._cleanup_line(line)
+            fwd = tr.trace(px, py, 90, self.gx, self.gy, max_steps=c.main_max_steps, gkernel=self.gk_main)
+            bwd = tr.trace(px, py, 270, self.gx, self.gy, max_steps=c.main_max_steps, gkernel=self.gk_main)
+            if c.split_main:
+                self.lines.append(fwd)
+                self.lines.append(bwd)
+                self._cleanup_line(bwd)
+                self._cleanup_line(fwd)
+            else:
+                line = list(reversed(bwd[1:])) + fwd
+                self.lines.append(line)
+                self._cleanup_line(line)
             if progress and i % 500 == 0:
                 progress(f"  main lines: {len(self.lines)}")
-        self.lines = [l for l in self.lines if len(l) > 1]
+        self.lines = [l for l in self.lines if len(l) >= c.main_min_points]
+        if c.main_order in ("sort", "sort_merge"):
+            self.lines = sorted(self.lines, key=len, reverse=True)
+        if c.main_order == "sort_merge":
+            self.lines = merge_lines(self.lines)
         return self
 
     # -- cross-hatching (c_v25 add_crosshatching) ---------------------------
     def hatch_seeds(self):
         c = self.cfg
         seeds = []
-        for line in (l for l in self.lines if len(l) > c.hatch_min_line_length):
+        if c.hatch_source == "longest":          # app5: 1000 longest, stop at the first short one
+            src = []
+            for line in self.lines[:1000]:
+                if len(line) < c.hatch_min_line_length:
+                    break
+                src.append(line)
+        else:                                    # all (c_v25) / merged (app7: lines already merged)
+            src = [l for l in self.lines if len(l) > c.hatch_min_line_length]
+        for line in src:
             for i, (px, py) in enumerate(line):
                 if c.hatch_adaptive_spacing:
                     interval = int(c.hatch_sample_interval * (1.5 - self.ipix[px, py]))
@@ -393,12 +547,16 @@ class Scribble:
         d = c.trace_kernel_size
         gxs = gaussian_blur(self.edges_x, 10 * 2 * d + 1, 6, c.separable_blur)
         gys = gaussian_blur(self.edges_y, 10 * 2 * d + 1, 6, c.separable_blur)
+        gk = gaussian_kernel_2d(10 * 2 * d + 1, 6) if c.legacy_gradient_sum else None
+        extra = (c.hatch_keep_min, gk)
+        dp = c.hatch_patch or d
         seeds = self.hatch_seeds()
         workers = c.workers or os.cpu_count() or 1
         if workers > 1 and len(seeds) > 200:
             from concurrent.futures import ProcessPoolExecutor
             chunks = [seeds[k::workers] for k in range(workers)]
-            args = [(self.ipix, d, gxs, gys, ch, tuple(c.hatch_angles), c.hatch_max_length) for ch in chunks]
+            args = [(self.ipix, dp, gxs, gys, ch, tuple(c.hatch_angles), c.hatch_max_length) + extra
+                    for ch in chunks]
             with ProcessPoolExecutor(workers) as ex:
                 parts = list(ex.map(_hatch_chunk, args))
             # restore the original (seed-major) order
@@ -408,8 +566,8 @@ class Scribble:
                     per_seed[k + j * workers] = res
             new = [l for res in per_seed for l in res]
         else:
-            new = [l for res in _hatch_chunk((self.ipix, d, gxs, gys, seeds, tuple(c.hatch_angles),
-                                              c.hatch_max_length)) for l in res]
+            new = [l for res in _hatch_chunk((self.ipix, dp, gxs, gys, seeds, tuple(c.hatch_angles),
+                                              c.hatch_max_length) + extra) for l in res]
         self.lines.extend(new)
         if progress:
             progress(f"  hatch lines: {len(new)} from {len(seeds)} seeds")
@@ -435,14 +593,14 @@ class Scribble:
 
 
 def _hatch_chunk(args):
-    ipix, d, gxs, gys, seeds, angles, max_len = args
+    ipix, d, gxs, gys, seeds, angles, max_len, keep_min, gk = args
     tr = _Tracer(ipix, d)
     out = []
     for px, py in seeds:
         res = []
         for angle, min_int in angles:
-            l = tr.trace(px, py, angle, gxs, gys, max_steps=max_len, min_intensity=min_int)
-            if len(l) > 3:
+            l = tr.trace(px, py, angle, gxs, gys, max_steps=max_len, min_intensity=min_int, gkernel=gk)
+            if len(l) >= keep_min:
                 res.append(l)
         out.append(res)
     return out

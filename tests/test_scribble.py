@@ -38,3 +38,15 @@ def test_kdtree_order_matches_bruteforce():
     brute = order_polylines(pls)               # n <= 2000 -> brute force path
     kd = _order_kdtree([list(p) for p in pls], (0.0, 0.0))
     assert [tuple(map(tuple, p)) for p in brute] == [tuple(map(tuple, p)) for p in kd]
+
+
+def test_app_presets_run_and_keep_highlights_white(tmp_path):
+    from plotter.scribble import preset
+    p = _img(tmp_path)
+    out = {}
+    for name in ("c_v25", "app5", "app7"):
+        lines, shape, sc = scribble(p, preset(name, max_lines=300, workers=1))
+        assert lines
+        out[name] = sc
+    # app presets zero the lightest 20% of the tonal range -> no ink there
+    assert (out["app5"].ipix == 0).sum() > (out["c_v25"].ipix == 0).sum()

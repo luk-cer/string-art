@@ -194,6 +194,14 @@ identical lines for the same seed, ~25x faster (image35: 201 s -> 8 s).
 uv run python -m plotter scribble photo.jpg -o out/scribble --max-side 800
 ```
 
+Presets reproduce the different scripts exactly (same lines for the same seed):
+
+| `--preset` | Look | image35 @ A4, 800 px |
+|---|---|---|
+| `c_v25` (default) | even scribble texture everywhere, lower contrast | 221 m ink, ~3.2 h |
+| `app5` | high contrast: light areas stay white, darks solid; hatch from the 1000 longest lines | 153 m, ~2.3 h |
+| `app7` | like app5, hatching from all (merged) lines: denser darks | 284 m, ~3.8 h |
+
 `--max-side` sets the tracing resolution, which sets line density on paper
 (one traced pixel ~ one pen step): keep mm-per-pixel (printed at the end) at
 or above the pen width or dark areas fill in solid. Other knobs mirror

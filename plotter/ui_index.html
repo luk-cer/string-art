@@ -197,6 +197,7 @@ const STYLE_PARAMS = {
     {k:"seed", label:"Random seed", min:1, max:99, step:1, v:1},
   ],
   scribble: [
+    {k:"preset", label:"Preset (fills the settings below)", type:"select", opts:["c_v25","app5","app7"], v:"c_v25", apply:true},
     {k:"max_side", label:"Max image side (0 = full)", unit:"px", min:0, max:3000, step:50, v:800},
     {k:"rotate", label:"Rotate", type:"select", opts:["auto","none","90"], v:"auto"},
     {k:"gradient_threshold", label:"Gradient threshold", min:0, max:0.3, step:0.01, v:0.05},
@@ -209,6 +210,19 @@ const STYLE_PARAMS = {
     {k:"hatch_angles", label:"Hatch angle:darkness", type:"text", v:"210:0.5,150:0.7,240:0.85,120:0.95"},
     {k:"hatch_sample_interval", label:"Hatch interval", unit:"px", min:2, max:40, step:1, v:10},
     {k:"hatch_max_length", label:"Hatch max length", unit:"px", min:10, max:400, step:10, v:150},
+    {k:"white_cut", label:"Keep light areas white", min:0, max:0.6, step:0.01, v:0},
+    {k:"cleanup_mode", label:"Line spacing rule", type:"select", opts:["adaptive","quadrant"], v:"adaptive"},
+    {k:"main_max_steps", label:"Main line max length", unit:"px", min:100, max:10000, step:100, v:1000},
+    {k:"min_magnitude_ratio", label:"Stop when gradient left <", type:"text", v:"1e-10"},
+    {k:"hatch_source", label:"Hatch from", type:"select", opts:["all","longest","merged"], v:"all"},
+    {k:"hatch_adaptive_spacing", label:"Denser hatching in darker areas", type:"check", v:true},
+    {k:"hatch_min_line_length", label:"Hatch only from lines longer than", unit:"px", min:0, max:50, step:1, v:3},
+    {k:"hatch_keep_min", label:"Keep hatch lines with at least", unit:"pts", min:1, max:20, step:1, v:4},
+    {k:"hatch_patch", label:"Hatch look-ahead (0 = kernel size)", unit:"px", min:0, max:10, step:1, v:0},
+    {k:"split_main", label:"Keep line halves separate (app5/7)", type:"check", v:false},
+    {k:"main_order", label:"Main line order", type:"select", opts:["none","sort","sort_merge"], v:"none"},
+    {k:"main_min_points", label:"Drop main lines shorter than", unit:"pts", min:1, max:10, step:1, v:2},
+    {k:"legacy_gradient_sum", label:"Legacy gradient sum (exact app5/7 replay)", type:"check", v:false},
     {k:"simplify_px", label:"Simplify", unit:"px", min:0, max:3, step:0.1, v:0.5},
     {k:"join_px", label:"Join ends closer than", unit:"px", min:0, max:6, step:0.5, v:1.5},
     {k:"remove_noise", label:"Denoise first (slow)", type:"check", v:false},
@@ -278,7 +292,7 @@ function control(p, values, onChange){
     if(p.type === "select") el.innerHTML = p.opts.map(o => `<option>${o}</option>`).join("");
     else el.type = "text";
     el.value = values[p.k];
-    el.onchange = () => { values[p.k] = el.value; onChange(); };
+    el.onchange = () => { values[p.k] = el.value; if(p.apply) applyPreset(el.value); else onChange(); };
     w.appendChild(el);
     return w;
   }
@@ -304,6 +318,26 @@ function buildControls(){
   PROFILE.forEach(p => pf.appendChild(control(p, S.profile, changedProfile)));
   $("pf_header").value = S.profile.header; $("pf_footer").value = S.profile.footer;
   document.querySelectorAll("#styleSeg button").forEach(b => b.classList.toggle("on", b.dataset.style === S.style));
+}
+// scribble presets come from the server (plotter/scribble.py PRESETS) so they never drift
+let _presets = null;
+const KEEP_ON_PRESET = ["preset","max_side","rotate","workers","seed","simplify_px","join_px"];
+async function applyPreset(name){
+  try{
+    if(!_presets) _presets = await (await fetch("/api/presets/scribble")).json();
+    const v = {..._presets.defaults, ...(_presets.presets[name] || {})};
+    const P = S.params.scribble;
+    for(const p of STYLE_PARAMS.scribble){
+      if(KEEP_ON_PRESET.includes(p.k) || !(p.k in v)) continue;
+      let x = v[p.k];
+      if(p.k === "hatch_angles") x = x.map(a => a.join(":")).join(",");
+      else if(x === null) x = p.type === "text" ? "" : 0;
+      else if(p.type === "text") x = String(x);
+      P[p.k] = x;
+    }
+    P.preset = name;
+    persist(); buildControls(); changed();
+  }catch(e){ $("stats").innerHTML = `<span class="err">Preset load failed: ${e.message}</span>`; }
 }
 function persist(){
   store.set("style", S.style); store.set("common", S.common);

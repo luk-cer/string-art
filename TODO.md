@@ -161,3 +161,10 @@ Performance (image35 736x1093):
 - [x] `numba` was imported in every c_v* file but never used
 - [ ] Optional fast arc fitting (G2/G3) to shrink files, with correct >180° handling
 - [ ] 2-opt refinement of stroke order (PathOptimizerV2 style) on top of KD greedy
+- [x] app5 / app7 reproduced as presets (identical lines to the original scripts on half-size image35;
+      44 s -> 4.8 s and 53 s -> 5.4 s). Differences vs c_v25: white cut (prob_mask aliases ipix in the scripts),
+      quadrant cleanup up to 20 px, stop at 0.1% gradient left, 10000-step lines, hatch angles 225/245/205/265,
+      hatch look-ahead 11x11 (trace() default d=5), hatch from longest (app5) / merged (app7) lines
+- [ ] app7 calls merge_lines before importing it (notebook-only); app5 imports finalize_and_generate_gcode,
+      which no longer exists in gcode_utils
+- [ ] Vectorise quadrant cleanup (app presets spend most time there)
