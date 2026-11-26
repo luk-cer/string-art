@@ -50,3 +50,20 @@ def test_app_presets_run_and_keep_highlights_white(tmp_path):
         out[name] = sc
     # app presets zero the lightest 20% of the tonal range -> no ink there
     assert (out["app5"].ipix == 0).sum() > (out["c_v25"].ipix == 0).sum()
+
+
+def test_clean_hatching_and_momentum(tmp_path):
+    import numpy as np
+    from plotter.scribble import preset, Scribble, load_gray
+    p = _img(tmp_path)
+    for kw in (dict(hatch_mode="clean"), dict(hatch_mode="clean", main_momentum=0.5, smooth_main=3)):
+        cfg = preset("app5", max_lines=300, workers=1, **kw)
+        sc = Scribble(load_gray(p, cfg), cfg)
+        sc.run()
+        hatch = sc.lines[sc.n_main:]
+        assert hatch
+        for l in hatch:                       # no U-turns: consecutive steps never reverse
+            a = np.diff(np.asarray(l, float), axis=0)
+            if len(a) > 1:
+                dots = (a[1:] * a[:-1]).sum(1)
+                assert (dots > 0).all()

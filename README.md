@@ -202,6 +202,10 @@ Presets reproduce the different scripts exactly (same lines for the same seed):
 | `app5` | high contrast: light areas stay white, darks solid; hatch from the 1000 longest lines | 153 m, ~2.3 h |
 | `app7` | like app5, hatching from all (merged) lines: denser darks | 284 m, ~3.8 h |
 
+Visual improvements (opt-in): `--hatch-mode clean` (no U-turns, spirals or clumped hatch
+lines; also fills flat dark areas), `--momentum 0.5` (calmer main lines), `--smooth 3`
+(no pixel staircase). Example: `--preset app5 --hatch-mode clean --momentum 0.5 --smooth 3`.
+
 `--max-side` sets the tracing resolution, which sets line density on paper
 (one traced pixel ~ one pen step): keep mm-per-pixel (printed at the end) at
 or above the pen width or dark areas fill in solid. Other knobs mirror

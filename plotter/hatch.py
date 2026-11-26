@@ -54,6 +54,7 @@ class HatchConfig:
     flow_bias_angle: float = 30.0     # direction used in flat areas
     flow_bias: float = 0.15           # how strongly flat areas fall back to the bias angle
     flow: str = "contour"             # contour | gradient | fixed
+    flow_fill_mm: float = 0.0         # >0: flat areas take orientation from this larger scale (0 = off)
     step_mm: float = 0.5
     min_len_mm: float = 5.0
     max_len_mm: float = 120.0
@@ -89,6 +90,18 @@ def direction_field(gray, cfg, px):
     j12 = ndimage.gaussian_filter(gx * gy, s)
     # doubled-angle vector of the gradient orientation, plus a constant bias
     vx, vy = j11 - j22, 2 * j12
+    fill = getattr(cfg, "flow_fill_mm", 0.0)
+    if fill:
+        # flat areas inherit orientation from surrounding structure at a larger
+        # scale (normalised so the large scale only matters where the small is weak)
+        S = fill / px
+        lx = ndimage.gaussian_filter(gx * gx - gy * gy, S)
+        ly = ndimage.gaussian_filter(2 * gx * gy, S)
+        ms, ml = np.hypot(vx, vy), np.hypot(lx, ly)
+        w = 1.0 / (1.0 + (ms / (0.25 * np.percentile(ms, 90) + 1e-12)) ** 2)   # ~1 in flat areas
+        k = np.percentile(ms, 90) / (np.percentile(ml, 90) + 1e-12)
+        vx = vx + w * k * lx
+        vy = vy + w * k * ly
     mag = np.hypot(vx, vy)
     b = cfg.flow_bias * np.percentile(mag, 90) + 1e-12
     grad_angle_bias = math.radians(cfg.flow_bias_angle) - (math.pi / 2 if cfg.flow == "contour" else 0)
@@ -174,8 +187,13 @@ class _Shared:
         self.mask_l = mask.ravel().tolist()
 
 
-def hatch_layer(darkness, mask, theta, threshold, cfg, px, rng, shared=None):
-    """Evenly spaced streamlines for one layer. Returns polylines in cell units."""
+def hatch_layer(darkness, mask, theta, threshold, cfg, px, rng, shared=None,
+                seed_points=None, max_total_turn_deg=None):
+    """Evenly spaced streamlines for one layer. Returns polylines in cell units.
+
+    seed_points: optional (y, x) cell coords tried first instead of the random
+    grid (side seeds still fill in). max_total_turn_deg: stop a line once its
+    accumulated turning exceeds this (prevents spirals); None = no limit."""
     h, w = darkness.shape
     smin, smax = cfg.s_min() / px, cfg.spacing_max_mm / px
     shared = shared or _Shared(darkness, mask, cfg, px)
@@ -209,11 +227,14 @@ def hatch_layer(darkness, mask, theta, threshold, cfg, px, rng, shared=None):
     max_steps = int(cfg.max_len_mm / cfg.step_mm)
     cos_turn = math.cos(math.radians(cfg.max_turn_deg))
 
+    turn_lim = math.radians(max_total_turn_deg) if max_total_turn_deg else None
+
     def trace(y, x, sign, end_thr):
         pts = []
         py, px_ = y, x
         has_prev = False
         pdx = pdy = 0.0
+        turned = 0.0
         for _ in range(max_steps):
             c = int(py) * w + int(px_)
             dx, dy = cos_l[c], sin_l[c]
@@ -231,6 +252,10 @@ def hatch_layer(darkness, mask, theta, threshold, cfg, px, rng, shared=None):
                 d2x = -d2x; d2y = -d2y
             if has_prev and d2x * pdx + d2y * pdy < cos_turn:
                 break
+            if turn_lim is not None and has_prev:
+                turned += math.atan2(pdx * d2y - pdy * d2x, pdx * d2x + pdy * d2y)
+                if abs(turned) > turn_lim:
+                    break
             ny, nx = py + d2y * step, px_ + d2x * step
             if not (0 <= ny < h and 0 <= nx < w):
                 break
@@ -244,6 +269,14 @@ def hatch_layer(darkness, mask, theta, threshold, cfg, px, rng, shared=None):
     # jittered seed grid (same random stream as drawing it point by point),
     # shuffled, then pre-filtered to cells where this layer may start a line
     gs = max(1, int(smin))
+    if seed_points is not None:
+        sp_ = np.asarray(seed_points, dtype=float).reshape(-1, 2)
+        inb = (sp_[:, 0] >= 0) & (sp_[:, 0] < h) & (sp_[:, 1] >= 0) & (sp_[:, 1] < w)
+        sp_ = sp_[inb]
+        ok_seed = seedable[sp_[:, 0].astype(np.int64), sp_[:, 1].astype(np.int64)]
+        grid_override = list(zip(sp_[ok_seed, 0].tolist(), sp_[ok_seed, 1].tolist()))
+    else:
+        grid_override = None
     gy, gx = np.mgrid[0:h - gs:gs, 0:w - gs:gs]
     r = rng.random(2 * gy.size).reshape(-1, 2)
     seeds_y = gy.ravel() + r[:, 0] * gs
@@ -254,6 +287,8 @@ def hatch_layer(darkness, mask, theta, threshold, cfg, px, rng, shared=None):
     seeds_y, seeds_x = seeds_y[order], seeds_x[order]
     ok_seed = seedable[seeds_y.astype(np.int64), seeds_x.astype(np.int64)]
     grid = list(zip(seeds_y[ok_seed].tolist(), seeds_x[ok_seed].tolist()))
+    if grid_override is not None:
+        grid = grid_override + grid          # edge seeds first, random grid fills the rest
     seedable_l = seedable.ravel().tolist()
 
     lines = []

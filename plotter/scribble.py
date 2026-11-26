@@ -66,6 +66,18 @@ class ScribbleConfig:
     hatch_source: str = "all"           # all (c_v25) | longest (app5: 1000 longest) | merged (app7)
     hatch_keep_min: int = 4             # keep hatch lines with at least this many points (app5/7: 1)
     hatch_patch: int | None = None      # look-ahead patch radius for hatching (None = trace_kernel_size; app5/7: 5)
+    # visual improvements (off by default = original look)
+    hatch_mode: str = "legacy"          # legacy (original tracer) | clean (orientation field, spacing, no spirals)
+    hatch_spacing_min_px: float = 1.5   # clean: hatch line spacing in the darkest areas
+    hatch_spacing_max_px: float = 4.0   # clean: spacing where a hatch layer fades in
+    hatch_flow_smooth_px: float = 6.0   # clean: smoothing of the hatch direction field (orig. sigma 6)
+    hatch_max_turn_deg: float = 90.0    # clean: stop a hatch line after turning this much in total
+    hatch_clean_min_len: float = 6.0    # clean: drop hatch strokes shorter than this (px)
+    hatch_threshold_shift: float = -0.1 # clean: start each hatch layer this much earlier (darker areas)
+    hatch_fill_px: float = 30.0         # clean: flat areas borrow hatch direction from this larger scale (0 = off)
+    smooth_main: int = 0                # moving-average window for main lines (0 = off): softens staircase
+    main_momentum: float = 0.0          # 0..0.95: blend each step with the previous direction (and never
+                                        # reverse onto itself) -> smoother, longer main lines; 0 = original
     # post
     min_points: int = 1                 # drop lines with fewer points (c_v25 keeps >1 for main lines)
     # performance
@@ -224,7 +236,7 @@ class _Tracer:
             w /= s
         return np.multiply(region, w).sum()
 
-    def trace(self, px, py, angle, gx, gy, max_steps=1000, min_intensity=0.0, gkernel=None):
+    def trace(self, px, py, angle, gx, gy, max_steps=1000, min_intensity=0.0, gkernel=None, momentum=0.0):
         rad = angle * np.pi / 180.0
         crad = np.cos(rad)
         srad = np.sin(rad)
@@ -233,6 +245,7 @@ class _Tracer:
         seen = {line[0]}
         unique = True
         step = 0
+        pdx = pdy = None                         # previous unit direction (momentum only)
         while -1 < px < H - 1 and -1 < py < W - 1 and unique and step < max_steps:
             cx, cy = int(px), int(py)
             a, b = gx[cx, cy], gy[cx, cy]
@@ -240,6 +253,18 @@ class _Tracer:
                 a, b = np.sum(a * gkernel), np.sum(b * gkernel)
             g_x = a * crad + b * srad
             g_y = -a * srad + b * crad
+            if momentum > 0 and (g_x != 0 or g_y != 0):
+                n = math.hypot(g_x, g_y)
+                ux, uy = g_x / n, g_y / n
+                if pdx is not None:
+                    if ux * pdx + uy * pdy < 0:      # same orientation, keep heading the same way
+                        ux, uy = -ux, -uy
+                    ux = momentum * pdx + (1 - momentum) * ux
+                    uy = momentum * pdy + (1 - momentum) * uy
+                    n = math.hypot(ux, uy) or 1.0
+                    ux, uy = ux / n, uy / n
+                pdx, pdy = ux, uy
+                g_x, g_y = ux, uy
             pint = self.direction_intensity(self.region(cx, cy), g_x, g_y)
             if pint <= min_intensity:
                 return line
@@ -500,8 +525,10 @@ class Scribble:
                 else:
                     self._zero_magnitude(np.array([px]), np.array([py]), np.array([3]))
                 continue
-            fwd = tr.trace(px, py, 90, self.gx, self.gy, max_steps=c.main_max_steps, gkernel=self.gk_main)
-            bwd = tr.trace(px, py, 270, self.gx, self.gy, max_steps=c.main_max_steps, gkernel=self.gk_main)
+            fwd = tr.trace(px, py, 90, self.gx, self.gy, max_steps=c.main_max_steps, gkernel=self.gk_main,
+                           momentum=c.main_momentum)
+            bwd = tr.trace(px, py, 270, self.gx, self.gy, max_steps=c.main_max_steps, gkernel=self.gk_main,
+                           momentum=c.main_momentum)
             if c.split_main:
                 self.lines.append(fwd)
                 self.lines.append(bwd)
@@ -573,23 +600,75 @@ class Scribble:
             progress(f"  hatch lines: {len(new)} from {len(seeds)} seeds")
         return self
 
+    def add_clean_hatching(self, progress=None):
+        """Hatching without U-turns, spirals or clumps: hatch directions from a
+        smoothed *orientation* field (sign kept consistent along a line), lines
+        in one direction family kept apart by a tone-dependent spacing, total
+        turning limited, sub-pixel steps. Starts from the same seed points on
+        the main lines as the legacy hatching, then fills evenly."""
+        from .hatch import HatchConfig, hatch_layer, direction_field, _Shared
+        c = self.cfg
+        angles = tuple(c.hatch_angles)
+        hc = HatchConfig(cell_mm=1.0, spacing_min_mm=c.hatch_spacing_min_px,
+                         spacing_max_mm=c.hatch_spacing_max_px, flow="gradient",
+                         flow_smooth_mm=c.hatch_flow_smooth_px, flow_fill_mm=c.hatch_fill_px, step_mm=1.0,
+                         max_len_mm=c.hatch_max_length, min_len_mm=c.hatch_clean_min_len,
+                         min_len_spacings=2.0, tone_smooth_mm=1.0, seed_margin=0.03, overrun=0.05,
+                         layer_thresholds=tuple(max(0.0, t + c.hatch_threshold_shift) for _, t in angles))
+        darkness = self.ipix
+        mask = np.ones(darkness.shape, dtype=bool)
+        base = direction_field(self.pix, hc, 1.0)
+        shared = _Shared(darkness, mask, hc, 1.0)
+        rng = np.random.default_rng(0 if c.seed is None else c.seed)
+        seeds = [(float(x), float(y)) for x, y in self.hatch_seeds()]
+        new = []
+        for (angle, _), thr in zip(angles, hc.layer_thresholds):
+            theta = base + math.radians(angle)
+            new += hatch_layer(darkness, mask, theta, thr, hc, 1.0, rng, shared,
+                               seed_points=seeds, max_total_turn_deg=c.hatch_max_turn_deg)
+        self.lines.extend(new)
+        if progress:
+            progress(f"  clean hatch lines: {len(new)}")
+        return self
+
     def run(self, progress=None):
         if self.cfg.seed is not None:
             np.random.seed(self.cfg.seed)
         self.preprocess()
         self.trace_main_lines(progress)
+        self.n_main = len(self.lines)
         if self.cfg.hatch:
-            self.add_crosshatching(progress)
+            if self.cfg.hatch_mode == "clean":
+                self.add_clean_hatching(progress)
+            else:
+                self.add_crosshatching(progress)
+        if self.cfg.smooth_main and self.cfg.smooth_main > 1:
+            self.lines[:self.n_main] = [_smooth_line(l, self.cfg.smooth_main) for l in self.lines[:self.n_main]]
         if self.cfg.min_points > 1:
             self.lines = [l for l in self.lines if len(l) >= self.cfg.min_points]
         return self.lines
 
     def render(self):
         out = np.ones(self.pix.shape, dtype=np.uint8) * 255
-        pts = np.array([p for l in self.lines for p in l], dtype=np.int64).reshape(-1, 2)
+        pts = np.array([p for l in self.lines for p in l], dtype=float).astype(np.int64).reshape(-1, 2)
         if len(pts):
             out[np.clip(pts[:, 0], 0, out.shape[0] - 1), np.clip(pts[:, 1], 0, out.shape[1] - 1)] = 0
         return out
+
+
+def _smooth_line(line, window):
+    """Moving average with float output; end points kept (lines still meet)."""
+    if len(line) <= 2:
+        return line
+    a = np.asarray(line, dtype=float)
+    k = int(window)
+    pad = k // 2
+    ap = np.pad(a, ((pad, pad), (0, 0)), mode="edge")
+    ker = np.ones(k) / k
+    sm = np.stack([np.convolve(ap[:, 0], ker, mode="valid"), np.convolve(ap[:, 1], ker, mode="valid")], 1)
+    sm = sm[:len(a)]
+    sm[0], sm[-1] = a[0], a[-1]
+    return [tuple(p) for p in sm.tolist()]
 
 
 def _hatch_chunk(args):

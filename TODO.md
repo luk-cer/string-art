@@ -168,3 +168,23 @@ Performance (image35 736x1093):
 - [ ] app7 calls merge_lines before importing it (notebook-only); app5 imports finalize_and_generate_gcode,
       which no longer exists in gcode_utils
 - [ ] Vectorise quadrant cleanup (app presets spend most time there)
+
+## 6. Scribble – visual quality (what made hatching look odd)
+
+Measured on image35 (half size), legacy hatching:
+- 56–76% of hatch lines make a U-turn: they follow the gradient *vector*, which flips 180° across every
+  dark line/ridge -> hooks, V shapes, back-tracking
+- 29–46% spiral (>270° total turn): a field rotated by 30–60° makes streamlines circle around sinks
+- no spacing between hatch lines: up to 491 hatch lines through one pixel -> ropes, knots, black fans
+- seeds only on main lines -> hatching follows edge density, not tone; flat dark areas (no gradient) get
+  almost nothing (photo test: 37% ink density vs 73% target darkness; main lines 0.6%)
+
+Done (all options, defaults keep the original look):
+- [x] `hatch_mode="clean"`: orientation field with consistent sign, per-direction spacing by tone,
+      total-turn limit, sub-pixel steps, edge seeds first then an even grid (fills flat darks: 61%)
+- [x] `hatch_fill_px`: flat areas borrow direction from a larger scale (lines wrap around shapes
+      instead of running in fixed parallel rows)
+- [x] `main_momentum` (0.5 recommended): no U-turns/spirals in main lines, calmer contours; 0.8 starts
+      cutting corners. `smooth_main` (3) removes the pixel staircase.
+- [ ] Coverage-based tone for clean hatching that accounts for main-line ink already present
+- [ ] Taper/stagger hatch ends at tone boundaries (as in flow hatch overrun)

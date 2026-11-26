@@ -107,6 +107,8 @@ def cmd_scribble(args):
     m = {"padding": "padding_mm", "pen": "pen_mm", "kernel": "trace_kernel_size",
          "sigma": "trace_kernel_sigma", "hatch_interval": "hatch_sample_interval",
          "simplify": "simplify_px", "join": "join_px", "white_cut": "white_cut",
+         "hatch_mode": "hatch_mode", "momentum": "main_momentum", "smooth": "smooth_main",
+         "hatch_fill": "hatch_fill_px",
          "cleanup_mode": "cleanup_mode", "hatch_source": "hatch_source"}
     keys = ["paper", "rotate", "max_side", "gradient_threshold", "cleanup_radius", "max_lines",
             "light_percentile", "hatch_max_length", "sampler", "workers", "seed"] + list(m)
@@ -121,6 +123,8 @@ def cmd_scribble(args):
         over["hatch"] = False
     if args.hatch_angles:
         over["hatch_angles"] = tuple(tuple(float(v) for v in a.split(":")) for a in args.hatch_angles.split(","))
+    if args.hatch_spacing:
+        over["hatch_spacing_min_px"], over["hatch_spacing_max_px"] = args.hatch_spacing
     over.setdefault("workers", 0)
     cfg = preset(args.preset, **over)
     print(f"preset {args.preset}")
@@ -271,6 +275,13 @@ def main(argv=None):
     c.add_argument("--denoise", action="store_true", help="non-local-means denoise first (slow)")
     c.add_argument("--no-hatch", action="store_true")
     c.add_argument("--hatch-source", choices=["all", "longest", "merged"])
+    c.add_argument("--hatch-mode", choices=["legacy", "clean"],
+                   help="clean: no U-turns/spirals/clumps, evenly spaced, fills flat dark areas")
+    c.add_argument("--hatch-spacing", type=float, nargs=2, metavar=("DARK", "LIGHT"),
+                   help="clean: hatch spacing in px (default 1.5 4)")
+    c.add_argument("--hatch-fill", type=float, help="clean: px scale flat areas borrow direction from (0 = off)")
+    c.add_argument("--momentum", type=float, help="0..0.95 main-line momentum (0.5 = calmer contours)")
+    c.add_argument("--smooth", type=int, help="main-line smoothing window in points (e.g. 3)")
     c.add_argument("--hatch-interval", type=int)
     c.add_argument("--hatch-max-length", type=int)
     c.add_argument("--hatch-angles", help="angle:min_darkness pairs, e.g. 210:0.5,150:0.7")
