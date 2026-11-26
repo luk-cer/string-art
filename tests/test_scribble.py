@@ -105,3 +105,22 @@ def test_freehand_mode_runs_and_is_smooth(tmp_path):
         if len(a) > 2:
             cosang = (a[1:] * a[:-1]).sum(1) / (np.hypot(*a[1:].T) * np.hypot(*a[:-1].T))
             assert np.percentile(cosang, 5) > 0.3
+
+
+def test_freehand_does_not_fill_enclosed_pockets_solid():
+    import numpy as np
+    from scipy import ndimage
+    from plotter.freehand import FreehandConfig, freehand
+    # light-grey field with a small walled pocket in the middle; target is uniform
+    H = W = 120
+    target = np.full((H, W), 0.35)
+    walls = np.zeros((H, W), bool)
+    walls[50:70, 50] = walls[50:70, 70] = walls[50, 50:71] = walls[70, 50:71] = True
+    strokes, _ = freehand(target, np.zeros((H, W)), FreehandConfig(pen_px=1.0, seed=1), walls=walls)
+    cov = np.zeros((H, W))
+    for s in strokes:
+        a = np.asarray(s).astype(int)
+        cov[a[:, 0], a[:, 1]] = 1
+    inside = cov[52:68, 52:68].mean()
+    outside = cov[10:40, 10:40].mean()
+    assert inside < 2.5 * outside + 0.05      # pocket not drawn much denser than the open field

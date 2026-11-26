@@ -51,6 +51,7 @@ class FreehandConfig:
     stroke_spread: float = 0.6       # log-normal spread of stroke lengths
     cross_prob: float = 0.08         # how easily the centre slips through a contour (0 = never)
     wall_margin: float = 3.0         # contour repulsion range beyond the loop radius (px)
+    region_ink: bool = True          # walled areas: ink only counts in the pen's own area
     max_ink_px: float = 0.0          # safety cap on total line length (0 = auto)
     budget: float = 6.0              # auto cap = budget x the line length the tone needs
     seed: int = 0
@@ -84,6 +85,12 @@ def freehand(target, theta, cfg: FreehandConfig, walls=None, progress=None):
     border = np.zeros((H, W), dtype=bool)
     border[0, :] = border[-1, :] = border[:, 0] = border[:, -1] = True
     dist = ndimage.distance_transform_edt(~(walls | border))
+    # areas enclosed by walls: ink only "counts" inside the area the pen is in,
+    # otherwise small pockets get drawn solid while the map says darkness is still missing
+    has_walls = bool(walls.any())
+    if has_walls:
+        region, _ = ndimage.label(~walls)
+
     gy, gx = np.gradient(ndimage.gaussian_filter(dist, 1.0))  # points away from walls
 
     B = 4                                                     # block size for sampling new starts
@@ -103,26 +110,37 @@ def freehand(target, theta, cfg: FreehandConfig, walls=None, progress=None):
         return (min(H - 2.0, by * B + rng.random() * B + 1), min(W - 2.0, bx * B + rng.random() * B + 1))
 
     def deposit(py, px, seg):
-        """Ink of a pen segment: bilinear share over 4 pixels, saturating, spread at view scale."""
+        """Ink of a pen segment: bilinear share over 4 pixels (saturating), then the
+        new ink is spread at viewing scale - within the pen's own walled area only."""
         y0, x0 = int(py), int(px)
         fy, fx = py - y0, px - x0
         ink = cfg.pen_px * seg
+        a_tot = 0.0
         for dy, dx, wgt in ((0, 0, (1 - fy) * (1 - fx)), (0, 1, (1 - fy) * fx),
                             (1, 0, fy * (1 - fx)), (1, 1, fy * fx)):
             if wgt <= 0:
                 continue
             qy, qx = y0 + dy, x0 + dx
             c = cov[qy, qx]
-            add = ink * wgt
-            new = 1.0 - (1.0 - c) * math.exp(-add)            # opaque ink stacks with saturation
-            a = new - c
+            new = 1.0 - (1.0 - c) * math.exp(-ink * wgt)      # opaque ink stacks with saturation
             cov[qy, qx] = new
-            if a <= 1e-6 or qy >= H or qx >= W:
-                continue
-            ys0, ys1, xs0, xs1 = qy - kr, qy + kr + 1, qx - kr, qx + kr + 1
-            ky0, kx0 = max(0, -ys0), max(0, -xs0)
-            ky1 = K.shape[0] - max(0, ys1 - H); kx1 = K.shape[1] - max(0, xs1 - W)
-            D[max(0, ys0):min(H, ys1), max(0, xs0):min(W, xs1)] -= a * K[ky0:ky1, kx0:kx1]
+            a_tot += new - c
+        if a_tot <= 1e-6:
+            return
+        qy, qx = min(int(py + 0.5), H - 1), min(int(px + 0.5), W - 1)
+        ys0, ys1, xs0, xs1 = qy - kr, qy + kr + 1, qx - kr, qx + kr + 1
+        ky0, kx0 = max(0, -ys0), max(0, -xs0)
+        ky1 = K.shape[0] - max(0, ys1 - H); kx1 = K.shape[1] - max(0, xs1 - W)
+        Kp = K[ky0:ky1, kx0:kx1]
+        sl = (slice(max(0, ys0), min(H, ys1)), slice(max(0, xs0), min(W, xs1)))
+        if has_walls and cfg.region_ink:
+            lab = region[qy, qx]
+            if lab:                                           # on a wall pixel: plain footprint
+                Kp = Kp * (region[sl] == lab)
+                sw = Kp.sum()
+                if sw > 0:
+                    Kp = Kp / sw
+        D[sl] -= a_tot * Kp
 
     total = D.sum() / max(cfg.pen_px, 1e-6)
     budget = cfg.max_ink_px or cfg.budget * total + 1000
@@ -158,10 +176,13 @@ def freehand(target, theta, cfg: FreehandConfig, walls=None, progress=None):
             tx = ty = 0.0
             best = 0.0
             vals = []
+            here = region[iy, ix] if has_walls else 0
             for k in range(8):
                 a = k * math.pi / 4 + 0.4 * rng.standard_normal()      # jittered look-ahead directions
                 sy, sx = int(cy + R * math.sin(a)), int(cx + R * math.cos(a))
                 v = max(0.0, D[sy, sx]) if (0 <= sy < H and 0 <= sx < W) else 0.0
+                if here and v and region[sy, sx] != here:
+                    v = 0.0                                          # behind a wall: not reachable
                 vals.append((v, a))
                 tx += v * math.cos(a); ty += v * math.sin(a)
                 best = max(best, v)

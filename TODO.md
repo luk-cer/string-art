@@ -201,5 +201,8 @@ Done (all options, defaults keep the original look):
       min loops, faster travel, wider erase footprint, larger length budget, less flow pull, random
       choice of the missing-ink direction
 - [x] freehand walls: none | major (drawn contours on coarse-scale edges) | all
-- [ ] freehand: small enclosed pockets between major walls can fill solid (hand trapped bouncing inside)
+- [x] freehand pockets: the "where is ink missing" look-ahead saw darkness behind walls, so a hand trapped
+      in a small walled pocket kept being pulled at the wall and stayed, filling it solid. Look-ahead now
+      ignores samples in other walled areas; the erase footprint is also kept to the pen's own area
+      (region_ink). Too-black pixels on the test portrait: 2.3% -> 1.1% (all walls: 7.2% -> 2.5%)
 - [ ] freehand: speed (pure-Python step loop, ~10 s at 500 px)
