@@ -98,6 +98,21 @@ radon_renderer/
 main.py            # Entry point
 ```
 
+## Preview UI
+
+```bash
+uv run python -m plotter ui        # opens http://127.0.0.1:8765
+```
+
+Upload a photo, drag the square crop, pick **String art / Flow hatch / Classic**,
+tune the sliders and press **Render** (or tick *auto*). The preview draws every
+line at true pen width; scroll to zoom, drag to pan, double-click to fit.
+*Travel moves* shows pen-up moves, ▶ animates the plot order, *Target* /
+*Simulation* show what the algorithm aims for vs. what it thinks it drew.
+Download the `.gcode`, `.svg` or `.json` from the bottom bar. The plotter
+profile (pen up/down, dwell, feed, header, Y flip…) is editable in the sidebar
+and remembered in the browser. Files are kept in `out/ui/`.
+
 ## Plotter output (G-code) and string art
 
 The `plotter` package writes G-code directly, in the same dialect as the

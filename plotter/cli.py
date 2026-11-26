@@ -2,6 +2,8 @@
 Plotter command line.
 
     python -m plotter stringart photo.jpg -o out/portrait
+    python -m plotter hatch photo.jpg -o out/hatch
+    python -m plotter ui                       # browser preview UI
     python -m plotter lines2gcode output.json -o out/radon
     python -m plotter profile --dump my_plotter.json
 """
@@ -16,6 +18,7 @@ from PIL import Image
 
 from . import stringart as sa
 from . import hatch as hz
+from . import pipeline
 from .gcode import PlotterProfile, write_gcode, write_svg, order_polylines
 from radon_renderer.config import PAPER_SIZES
 
@@ -39,41 +42,30 @@ def cmd_stringart(args):
         crop=tuple(args.crop) if args.crop else None,
     )
     pw, ph, _, R = sa.layout(cfg)
-    size = int(round(2 * R / cfg.pixel_mm))
-    print(f"Circle {2*R:.0f} mm on {cfg.paper} -> sim grid {size}x{size} "
-          f"({cfg.pixel_mm} mm/cell), {cfg.nails} nails, pen {cfg.pen_mm} mm")
-
+    print(f"Circle {2*R:.0f} mm on {cfg.paper}, {cfg.nails} nails, pen {cfg.pen_mm} mm")
     t0 = time.time()
-    target, weight, mask, box = sa.prepare_target(args.image, cfg, size)
-    table = sa.LineTable(cfg.nails, size, cfg.pixel_mm, cfg.pen_mm)
-    print(f"Line table built in {time.time()-t0:.1f}s; solving...")
-    strokes, cov, _ = sa.solve(target, weight, cfg, table,
-                               progress=lambda s, e: print(f"  {s:5d} lines  err {e:.5f}"))
-    n_lines = sum(len(st) - 1 for st in strokes)
-    print(f"Done: {n_lines} lines in {len(strokes)} pen-down strokes, {time.time()-t0:.1f}s")
-
-    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
-    polylines = sa.strokes_to_polylines(strokes, cfg)
-    if cfg.frame:
-        polylines.append(sa.circle_polyline(cfg))
+    res = pipeline.build_stringart(args.image, cfg,
+                                   progress=lambda s, e: print(f"  {s:5d} lines  err {e:.5f}"))
+    n_lines = res.info["lines"]
+    print(f"Done: {n_lines} lines in {res.info['strokes']} pen-down strokes, {time.time()-t0:.1f}s")
 
     prof = _profile(args)
     if args.feed:
         prof.draw_feed = args.feed
-    stats = write_gcode(polylines, args.output + ".gcode", prof, paper_height=ph,
-                        comment=f"string art: {n_lines} lines, {cfg.nails} nails")
-    write_svg(polylines, args.output + ".svg", pw, ph, cfg.pen_mm)
-    sa.render_preview(polylines, cfg, args.output + "_preview.png")
+    stats = pipeline.export(res, args.output, prof,
+                            comment=f"string art: {n_lines} lines, {cfg.nails} nails")
+    sa.render_preview(res.polylines, cfg, args.output + "_preview.png")
 
     # target vs simulation side by side, for tuning
-    tgt = Image.fromarray((255 * (1 - target)).astype(np.uint8))
-    sim = Image.fromarray((255 * (1 - cov)).astype(np.uint8))
+    size = res.target.shape[0]
+    tgt = Image.fromarray((255 * (1 - res.target)).astype(np.uint8))
+    sim = Image.fromarray((255 * (1 - res.simulation)).astype(np.uint8))
     both = Image.new("L", (size * 2 + 10, size), 255)
     both.paste(tgt, (0, 0)); both.paste(sim, (size + 10, 0))
     both.save(args.output + "_compare.png")
 
-    stats.update(lines=n_lines, strokes=len(strokes))
-    sa.save_json(args.output + ".json", strokes, cfg, box, stats)
+    stats.update(lines=n_lines, strokes=res.info["strokes"])
+    sa.save_json(args.output + ".json", res.info["nail_strokes"], cfg, res.info["crop_box"], stats)
     print(f"Ink length {stats['draw_mm']/1000:.1f} m, est. plot time "
           f"{stats['est_minutes']/60:.1f} h at F{prof.draw_feed:g}")
     print(f"Wrote {args.output}.gcode / .svg / _preview.png / _compare.png / .json")
@@ -92,25 +84,15 @@ def cmd_hatch(args):
         tone_smooth_mm=args.tone_smooth, seed_margin=args.seed_margin,
         overrun=args.overrun, min_len_spacings=args.min_len_spacings,
     )
-    pw, ph, _, _ = sa.layout(cfg)
     t0 = time.time()
-    layers, darkness, box = hz.flow_hatch(args.image, cfg)
-    # draw layer by layer (light to dark), each layer path-optimised
-    polylines, pos = [], (0.0, 0.0)
-    for layer in layers:
-        ordered = order_polylines(layer, start=pos)
-        if ordered:
-            pos = ordered[-1][-1]
-        polylines += ordered
-    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+    res = pipeline.build_hatch(args.image, cfg)
     prof = _profile(args)
     if args.feed:
         prof.draw_feed = args.feed
-    stats = write_gcode(polylines, args.output + ".gcode", prof, paper_height=ph,
-                        comment=f"flow hatch ({cfg.flow}), {len(layers)} layers, pen {cfg.pen_mm} mm")
-    write_svg(polylines, args.output + ".svg", pw, ph, cfg.pen_mm)
-    sa.render_preview(polylines, cfg, args.output + "_preview.png")
-    print(f"{len(polylines)} strokes in {time.time()-t0:.1f}s; ink {stats['draw_mm']/1000:.1f} m, "
+    stats = pipeline.export(res, args.output, prof,
+                            comment=f"flow hatch ({cfg.flow}), {len(cfg.layer_angles)} layers, pen {cfg.pen_mm} mm")
+    sa.render_preview(res.polylines, cfg, args.output + "_preview.png")
+    print(f"{len(res.polylines)} strokes in {time.time()-t0:.1f}s; ink {stats['draw_mm']/1000:.1f} m, "
           f"travel {stats['travel_mm']/1000:.1f} m, ~{stats['est_minutes']:.0f} min")
     print(f"Wrote {args.output}.gcode / .svg / _preview.png")
 
@@ -217,6 +199,14 @@ def main(argv=None):
     l.add_argument("--no-order", action="store_true", help="keep original line order")
     _add_gcode_args(l)
     l.set_defaults(fn=cmd_lines2gcode)
+
+    u = sub.add_parser("ui", help="local preview UI in the browser")
+    u.add_argument("--host", default="127.0.0.1")
+    u.add_argument("--port", type=int, default=8765)
+    u.add_argument("--workdir", default="out/ui", help="where uploads and renders are kept")
+    u.add_argument("--no-browser", action="store_true")
+    u.set_defaults(fn=lambda a: __import__("plotter.ui", fromlist=["serve"]).serve(
+        a.host, a.port, a.workdir, open_browser=not a.no_browser))
 
     p = sub.add_parser("profile", help="write default plotter profile")
     p.add_argument("--dump", default="plotter_profile.json")

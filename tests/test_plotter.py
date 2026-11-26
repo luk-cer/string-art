@@ -44,3 +44,21 @@ def test_flow_hatch_smoke(tmp_path):
     layers, _, _ = hz.flow_hatch(p, cfg, progress=None)
     assert len(layers) == 4
     assert len(layers[0]) > len(layers[3]) > 0   # darker layers cover less area
+
+
+def test_ui_backend_render(tmp_path):
+    import io
+    from PIL import Image
+    from plotter.ui import App
+    yy, xx = np.mgrid[:200, :200]
+    img = (255 * np.clip(np.hypot(xx - 100, yy - 100) / 100, 0, 1)).astype(np.uint8)
+    buf = io.BytesIO(); Image.fromarray(img).save(buf, "PNG")
+    app = App(tmp_path)
+    up = app.upload(buf.getvalue())
+    for style, params in [("hatch", {"layers": 2, "diameter_mm": 60}),
+                          ("stringart", {"nails": 60, "max_lines": 200, "diameter_mm": 60, "pixel_mm": 2})]:
+        r = app.render({"image": up["id"], "crop": up["crop"], "style": style, "params": params,
+                        "profile": {"draw_feed": 2000, "header": ["G21", "G90"]}})
+        assert r["polylines"] and r["stats"]["draw_mm"] > 0
+        g = app.job_file(r["job"], "plot.gcode").read_text()
+        assert "F2000" in g

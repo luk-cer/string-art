@@ -82,11 +82,17 @@ Keep `radon_renderer` modes as-is (`lines2gcode` plots them unchanged). New styl
 
 ## 3. Preview / UI
 
-- [ ] Local web UI (stdlib `http.server` or a tiny FastAPI app, no build step):
-      upload photo → crop circle interactively → sliders (nails, lines, pen, overshoot, gamma, …)
-      → live preview at true pen width → download `.gcode` / `.svg`
-- [ ] Animated "plot order" preview (draw lines in G-code order) to sanity-check pen lifts
-- [ ] G-code viewer: load any `.gcode`, show pen-down vs travel, bounds vs paper
+`python -m plotter ui` (stdlib server + one HTML page, no extra deps)
+
+- [x] Upload photo, interactive square/circle crop (auto-zooms to content, auto-crop default)
+- [x] All three styles (string art, flow hatch, classic radon) with sliders; settings remembered per style
+- [x] Preview at true pen width, zoom/pan, travel moves overlay, animated plot order
+- [x] Target vs simulation view
+- [x] Editable plotter profile → downloads `.gcode` / `.svg` / `.json`
+- [ ] Progress bar / cancel for long string-art renders (currently a timer)
+- [ ] Load an existing `.gcode` file and preview it (pen-down vs travel, bounds vs paper)
+- [ ] Side-by-side compare of two renders (A/B of settings)
+- [ ] Importance brush: paint the face/eyes to weight them higher (string art + hatch)
 
 ## 4. Review of existing `radon_renderer` code (bugs / cleanups)
 
