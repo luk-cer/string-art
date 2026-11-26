@@ -317,21 +317,21 @@ def merge_strokes(lines, max_gap, max_angle_deg):
     cos_max = math.cos(math.radians(max_angle_deg))
     pairs = cKDTree(pts).query_pairs(max_gap, output_type="ndarray")
     cand = []
-    for a, b in pairs:
+    if len(pairs):
+        a, b = pairs[:, 0], pairs[:, 1]
         i, j = a // 2, b // 2
-        if i == j:
-            continue
-        oa, ob = out[i, a % 2], out[j, b % 2]
+        oa = out[i, a % 2]
+        ob = out[j, b % 2]
         v = pts[b] - pts[a]
-        d = float(np.hypot(*v))
-        if d > 1e-9:
-            v /= d
-            if v @ oa < cos_max or -(v @ ob) < cos_max:
-                continue
-        elif -(oa @ ob) < cos_max:
-            continue
-        cand.append((d, a, b))
-    cand.sort()
+        d = np.hypot(v[:, 0], v[:, 1])
+        far = d > 1e-9
+        vn = np.where(far[:, None], v / np.where(far, d, 1.0)[:, None], 0.0)
+        ok_far = ((vn * oa).sum(1) >= cos_max) & (-(vn * ob).sum(1) >= cos_max)
+        ok_near = -(oa * ob).sum(1) >= cos_max
+        keep = (i != j) & np.where(far, ok_far, ok_near)
+        a, b, d = a[keep], b[keep], d[keep]
+        order = np.lexsort((b, a, d))          # same order as sorting (d, a, b) tuples
+        cand = list(zip(d[order].tolist(), a[order].tolist(), b[order].tolist()))
     parent = list(range(n))
 
     def find(x):

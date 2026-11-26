@@ -45,7 +45,8 @@ def config_from_dict(cls, d):
         elif t.startswith("tuple"):
             if isinstance(v, str):
                 v = [x for x in re.split(r"[,\s]+", v) if x]
-            v = tuple(float(x) for x in v)
+            v = tuple(tuple(float(y) for y in x) if isinstance(x, (list, tuple)) else float(x)
+                      for x in v)
         elif t.startswith("bool"):
             v = bool(v) if not isinstance(v, str) else v.lower() in ("1", "true", "yes", "on")
         elif t.startswith("int"):
@@ -142,11 +143,57 @@ def build_radon(image_path, cfg: RadonConfig, progress=None):
                   info={"lines": len(segs)}, target=tgt)
 
 
+def build_scribble(image_path, cfg, progress=None):
+    """Gradient-tracing scribble (port of scribble-code/c_v25) -> paper mm polylines."""
+    import math
+    from . import scribble as scr
+    from .hatch import _rdp, merge_strokes
+    lines, (H, W), sc = scr.scribble(image_path, cfg, progress=progress)
+    lines = [l for l in lines if len(l) >= cfg.min_points_out]
+
+    pw, ph = PAPER_SIZES[cfg.paper]
+    if cfg.portrait:
+        pw, ph = min(pw, ph), max(pw, ph)
+    aw, ah = pw - 2 * cfg.padding_mm, ph - 2 * cfg.padding_mm
+    fit = lambda w, h: min(aw / w, ah / h)
+    rot = cfg.rotate == "90" or (cfg.rotate == "auto" and fit(H, W) > fit(W, H) * 1.05)
+    cw, ch = (H, W) if rot else (W, H)            # content size in pixels after rotation
+    s = fit(cw, ch)
+    ox = (pw - cw * s) / 2
+    oy = (ph - ch * s) / 2
+
+    def to_mm(r, c):
+        # image (row, col) -> paper (x, y) y-down; rotation is 90 deg clockwise
+        x, y = (H - 1 - r, c) if rot else (c, r)
+        return (ox + (x + 0.5) * s, oy + (y + 0.5) * s)
+
+    polylines = []
+    tol = cfg.simplify_px * s
+    for l in lines:
+        pl = [to_mm(r, c) for r, c in l]
+        polylines.append(_rdp(pl, tol) if tol > 0 else pl)
+    if cfg.join_px > 0:
+        polylines = merge_strokes(polylines, cfg.join_px * s, 180.0)
+    ordered = order_polylines(polylines)
+    return Result(ordered, pw, ph, cfg.pen_mm,
+                  info={"traced_lines": len(lines), "image_px": [W, H], "rotated": bool(rot),
+                        "mm_per_px": round(s, 4)},
+                  target=sc.ipix)
+
+
 STYLES = {
     "stringart": (sa.StringArtConfig, build_stringart),
     "hatch": (hz.HatchConfig, build_hatch),
     "radon": (RadonConfig, build_radon),
 }
+
+
+def _scribble_entry():
+    from .scribble import ScribbleConfig
+    return ScribbleConfig
+
+
+STYLES["scribble"] = (_scribble_entry(), build_scribble)
 
 
 def export(result: Result, out_base, profile: PlotterProfile, comment=None):

@@ -184,5 +184,21 @@ Useful knobs: `--flow-smooth` (mm, calmer vs more detailed curves), `--layers 1-
 `--thresholds` (darkness where each layer starts), `--spacing-max/--spacing-min`,
 `--min-len`, `--shape rect`.
 
+### Scribble (gradient tracing)
+
+Fast port of `scribble-code/c_v25.py` (branch `add-scribble-code`): lines follow
+the image's contours, plus angled cross-hatching in darker areas. Same look,
+identical lines for the same seed, ~25x faster (image35: 201 s -> 8 s).
+
+```bash
+uv run python -m plotter scribble photo.jpg -o out/scribble --max-side 800
+```
+
+`--max-side` sets the tracing resolution, which sets line density on paper
+(one traced pixel ~ one pen step): keep mm-per-pixel (printed at the end) at
+or above the pen width or dark areas fill in solid. Other knobs mirror
+`SketchConverter`: `--gradient-threshold`, `--cleanup-radius`, `--max-lines`,
+`--hatch-angles 210:0.5,150:0.7,...`, `--no-hatch`, `--denoise`.
+
 See `TODO.md` for the review of the existing code and the roadmap
 (better crosshatching, preview UI, string-art quality).

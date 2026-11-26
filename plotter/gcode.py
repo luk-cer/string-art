@@ -78,6 +78,8 @@ def order_polylines(polylines, start=(0.0, 0.0)):
     pls = [list(p) for p in polylines if len(p) >= 2]
     if not pls:
         return []
+    if len(pls) > 2000:
+        return _order_kdtree(pls, start)
     starts = np.array([p[0] for p in pls], dtype=float)
     ends = np.array([p[-1] for p in pls], dtype=float)
     left = np.ones(len(pls), dtype=bool)
@@ -95,6 +97,51 @@ def order_polylines(polylines, start=(0.0, 0.0)):
             pl = pls[i0]; left[i0] = False
         ordered.append(pl)
         pos = np.array(pl[-1], dtype=float)
+    return ordered
+
+
+def _order_kdtree(pls, start):
+    """Same greedy nearest-endpoint ordering, using a KD-tree: O(n log n)
+    instead of O(n^2), for tens of thousands of strokes (scribble style)."""
+    from scipy.spatial import cKDTree
+    n = len(pls)
+    ends = np.empty((2 * n, 2))
+    ends[0::2] = [p[0] for p in pls]
+    ends[1::2] = [p[-1] for p in pls]
+    alive = np.ones(n, dtype=bool)
+    idx_map = np.arange(2 * n)               # tree row -> endpoint id
+    tree = cKDTree(ends)
+    n_alive = n
+    pos = np.asarray(start, dtype=float)
+    ordered = []
+    while n_alive:
+        k = 8
+        found = None
+        while found is None:
+            k = min(k, len(idx_map))
+            _, rows = tree.query(pos, k=k)
+            rows = np.atleast_1d(rows)
+            for r in rows:
+                if r >= len(idx_map):
+                    continue
+                e = idx_map[r]
+                if alive[e >> 1]:
+                    found = e
+                    break
+            if found is None:
+                if k >= len(idx_map):
+                    break
+                k *= 4
+        i, is_end = found >> 1, found & 1
+        pl = pls[i][::-1] if is_end else pls[i]
+        alive[i] = False
+        n_alive -= 1
+        ordered.append(pl)
+        pos = np.asarray(pl[-1], dtype=float)
+        if n_alive and n_alive * 2 < len(idx_map) // 2:   # rebuild with live endpoints only
+            keep = alive[idx_map >> 1]
+            idx_map = idx_map[keep]
+            tree = cKDTree(ends[idx_map])
     return ordered
 
 

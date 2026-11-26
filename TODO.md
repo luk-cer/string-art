@@ -125,3 +125,39 @@ Hygiene:
 - [ ] Debug print `jsorn arg` in `cli.py`
 - [ ] No tests – add small ones for geometry (chord endpoints on circle), G-code writer, ink model
 - [ ] `PAPER_SIZES` landscape only; add orientation flag to radon CLI (string art has `--portrait`)
+
+## 5. scribble-code (branch `add-scribble-code`) – review
+
+What is what (single commit, so lineage is from content diffs):
+
+| File | What it is |
+|---|---|
+| `app.py`, `app2.py`, `app3py`(= `app4.py`), `app5-7.py` | early notebook-style scripts, each a copy-paste evolution; app5+ add G-code |
+| `image2sketch.py` | first `SketchConverter` class (zuzka.jpg) |
+| `c_v14.py` → `c_v22.py` → **`c_v25.py`** | successive SketchConverter versions; **c_v25 is the latest** (adaptive cleanup from intensity+variance, optional NL-means denoise) |
+| `gcode_old.py` | first G-code writer (DPI scale, pen lift per line); has a broken top-level call (`lines2` undefined) |
+| `gcode_utils.py` | merge (Eulerian), greedy+2-opt ordering, line/arc fitting (`GeometryOptimizer`), several G-code writers |
+| `path_optimizer.py` | `PathOptimizer` / `PathOptimizerV2` (same code + comments): KD-tree greedy + windowed 2-opt |
+| `gcode_generator.py` | **latest** writer `GCodeGenerator`: fit-to-page, arc sanitising, G2/G3 by cross product |
+| `plotter.py`, `plotter_v2.py`, `rpi-plotter_app.py` | unrelated: 2-servo arm plotter kinematics on RP2040 (MicroPython) |
+
+G-code changes found across the versions:
+- [x] Dwell fixed: early writers emit `G4 P15` (GRBL: P = **seconds** → 15 s per pen move; image35.gcode would
+      pause ~125 h). `GCodeGenerator` uses `P{ms/1000}` → `P0.015`. Our writer: `dwell_s` (default 0.05, like the
+      hand-edited file).
+- [x] Arc direction: `to_gcode`, `to_gcode_a4`, `to_gcode_continuous` always emit `G2` (half the arcs drawn the
+      wrong way – image4.jpg.gcode has 153k G2 and 0 G3). `GCodeGenerator` picks G2/G3 by cross product.
+- [ ] `GCodeGenerator` still assumes every arc is < 180° (center side ⇒ direction); a fitted arc > 180° would be
+      drawn as its complement. Our port avoids arcs (RDP polylines) – optional arc fitting could be added back.
+- [ ] `GCodeGenerator`: no Y flip; X = image row, so on a bottom-left-origin plotter the image is rotated 90°
+      (our `--rotate auto` does this explicitly). Fit-to-page uses the drawing's bounding box, not the image.
+- [ ] `generate_final_gcode` rotation maps Y negative (`ny = -nx`) and prints 14 decimals – unused now.
+
+Performance (image35 736x1093):
+- [x] Tracing: 201 s → 8 s, identical output (`plotter/scribble.py`; see its docstring for what changed)
+- [x] G-code: `GeometryOptimizer` arc DP took 223 s for the *half-size* image; replaced by vectorised RDP +
+      end joining + KD-tree ordering (~3 s full size). Fewer pen lifts (2748 vs 4159 on half size); G-code file
+      is larger (line segments instead of arcs).
+- [x] `numba` was imported in every c_v* file but never used
+- [ ] Optional fast arc fitting (G2/G3) to shrink files, with correct >180° handling
+- [ ] 2-opt refinement of stroke order (PathOptimizerV2 style) on top of KD greedy

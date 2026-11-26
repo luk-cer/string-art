@@ -91,6 +91,12 @@ class App:
                                       zip(range(1, 5), (0, 90, 45, -45))][:n]
             params["layer_thresholds"] = [params.pop(f"t{i}", d) for i, d in
                                           zip(range(1, 5), (0.12, 0.40, 0.62, 0.80))][:n]
+        if style == "scribble":
+            ha = params.pop("hatch_angles", None)
+            if isinstance(ha, str) and ha.strip():
+                params["hatch_angles"] = [[float(v) for v in a.split(":")] for a in ha.split(",") if ":" in a]
+            if params.get("max_side") in (0, "0"):
+                params["max_side"] = None
         cfg = pipeline.config_from_dict(cls, params)
         profile = pipeline.config_from_dict(PlotterProfile, req.get("profile") or {})
 

@@ -87,9 +87,10 @@ main{display:grid;grid-template-rows:auto 1fr auto;min-width:0}
     </div>
 
     <h2>Style</h2>
-    <div class="seg" id="styleSeg">
+    <div class="seg" id="styleSeg" style="grid-template-columns:repeat(4,1fr)">
       <button data-style="stringart" class="on">String art</button>
       <button data-style="hatch">Flow hatch</button>
+      <button data-style="scribble">Scribble</button>
       <button data-style="radon">Classic</button>
     </div>
 
@@ -150,7 +151,7 @@ const COMMON = [
   {k:"portrait", label:"Portrait orientation", type:"check", v:false, not:["radon"]},
   {k:"pen_mm", label:"Pen width", unit:"mm", min:0.05, max:1.0, step:0.05, v:0.3},
   {k:"padding_mm", label:"Padding", unit:"mm", min:0, max:40, step:1, v:10},
-  {k:"diameter_mm", label:"Diameter (0 = fit)", unit:"mm", min:0, max:400, step:5, v:0, not:["radon"]},
+  {k:"diameter_mm", label:"Diameter (0 = fit)", unit:"mm", min:0, max:400, step:5, v:0, not:["radon","scribble"]},
 ];
 const STYLE_PARAMS = {
   stringart: [
@@ -194,6 +195,25 @@ const STYLE_PARAMS = {
     {k:"outline_min_len_mm", label:"Outline min length", unit:"mm", min:0, max:60, step:1, v:15},
     {k:"shape", label:"Shape", type:"select", opts:["circle","rect"], v:"circle"},
     {k:"seed", label:"Random seed", min:1, max:99, step:1, v:1},
+  ],
+  scribble: [
+    {k:"max_side", label:"Max image side (0 = full)", unit:"px", min:0, max:3000, step:50, v:800},
+    {k:"rotate", label:"Rotate", type:"select", opts:["auto","none","90"], v:"auto"},
+    {k:"gradient_threshold", label:"Gradient threshold", min:0, max:0.3, step:0.01, v:0.05},
+    {k:"cleanup_radius", label:"Cleanup radius (spacing)", unit:"px", min:1, max:20, step:1, v:4},
+    {k:"max_lines", label:"Max main lines", min:100, max:30000, step:100, v:10000},
+    {k:"light_percentile", label:"Light percentile", min:0, max:20, step:0.5, v:1},
+    {k:"trace_kernel_size", label:"Trace kernel size", min:1, max:10, step:1, v:4},
+    {k:"trace_kernel_sigma", label:"Trace kernel sigma", min:0.5, max:6, step:0.5, v:2},
+    {k:"hatch", label:"Cross-hatching", type:"check", v:true},
+    {k:"hatch_angles", label:"Hatch angle:darkness", type:"text", v:"210:0.5,150:0.7,240:0.85,120:0.95"},
+    {k:"hatch_sample_interval", label:"Hatch interval", unit:"px", min:2, max:40, step:1, v:10},
+    {k:"hatch_max_length", label:"Hatch max length", unit:"px", min:10, max:400, step:10, v:150},
+    {k:"simplify_px", label:"Simplify", unit:"px", min:0, max:3, step:0.1, v:0.5},
+    {k:"join_px", label:"Join ends closer than", unit:"px", min:0, max:6, step:0.5, v:1.5},
+    {k:"remove_noise", label:"Denoise first (slow)", type:"check", v:false},
+    {k:"seed", label:"Random seed", min:0, max:99, step:1, v:0},
+    {k:"workers", label:"Worker processes (0 = all)", min:0, max:16, step:1, v:0},
   ],
   radon: [
     {k:"mode", label:"Mode", type:"select", opts:["fixed_6","6_plus_refine","pure_optimize","hierarchical"], v:"hierarchical"},
@@ -279,7 +299,7 @@ function buildControls(){
         .forEach(p => c.appendChild(control(p, S.common, changed)));
   const s = $("styleParams"); s.innerHTML = "";
   STYLE_PARAMS[S.style].forEach(p => s.appendChild(control(p, S.params[S.style], changed)));
-  $("styleTitle").textContent = {stringart:"String art", hatch:"Flow hatch", radon:"Classic radon"}[S.style];
+  $("styleTitle").textContent = {stringart:"String art", hatch:"Flow hatch", scribble:"Scribble", radon:"Classic radon"}[S.style];
   const pf = $("profileParams"); pf.innerHTML = "";
   PROFILE.forEach(p => pf.appendChild(control(p, S.profile, changedProfile)));
   $("pf_header").value = S.profile.header; $("pf_footer").value = S.profile.footer;
@@ -302,7 +322,8 @@ $("resetParams").onclick = () => {
   S.common = defaults(COMMON); S.params[S.style] = defaults(STYLE_PARAMS[S.style]); persist(); buildControls();
 };
 document.querySelectorAll("#styleSeg button").forEach(b => b.onclick = () => {
-  S.style = b.dataset.style; persist(); buildControls(); if(S.image) drawCrop(); changed();
+  const wasFree = freeCrop(); S.style = b.dataset.style; persist(); buildControls();
+  if(S.image){ if(wasFree !== freeCrop()){ cropForStyle(); setCropView(); } drawCrop(); } changed();
 });
 
 // ---------------------------------------------------------------- upload + crop
@@ -319,7 +340,7 @@ async function upload(f){
   try{
     const r = await fetch("/api/upload", {method:"POST", body:f, headers:{"X-Filename":encodeURIComponent(f.name)}});
     const j = await r.json(); if(!r.ok) throw new Error(j.error);
-    S.image = j; S.crop = j.crop.slice(); setCropView();
+    S.image = j; cropForStyle(); setCropView();
     cropImg.onload = () => { $("cropWrap").style.display = "block"; drawCrop(); };
     cropImg.src = j.url;
     drop.innerHTML = `${f.name} — <u>change</u>`;
@@ -332,7 +353,10 @@ const cc = $("cropCanvas"), cx = cc.getContext("2d");
 let cropScale = 1, cropView = [0,0,1,1];
 function setCropView(){
   // show the part of the image that has content (e.g. a small photo on a big white canvas)
-  const [x0,y0,x1,y1] = S.image.content, pad = 0.08 * Math.max(x1-x0, y1-y0);
+  let [x0,y0,x1,y1] = S.image.content;
+  if(S.crop){ x0 = Math.min(x0, S.crop[0]); y0 = Math.min(y0, S.crop[1]);
+              x1 = Math.max(x1, S.crop[0]+S.crop[2]); y1 = Math.max(y1, S.crop[1]+S.crop[3]); }
+  const pad = 0.08 * Math.max(x1-x0, y1-y0);
   const vx0 = Math.max(0, x0-pad), vy0 = Math.max(0, y0-pad);
   cropView = [vx0, vy0, Math.min(S.image.width, x1+pad) - vx0, Math.min(S.image.height, y1+pad) - vy0];
 }
@@ -347,44 +371,54 @@ function drawCrop(){
   cx.save(); cx.translate(-vx0*cropScale, -vy0*cropScale);
   cx.drawImage(cropImg, 0, 0, S.image.width*cropScale, S.image.height*cropScale);
   cx.restore();
-  const [x,y,w] = [(S.crop[0]-vx0)*cropScale, (S.crop[1]-vy0)*cropScale, S.crop[2]*cropScale];
+  const [x,y,w,h] = [(S.crop[0]-vx0)*cropScale, (S.crop[1]-vy0)*cropScale, S.crop[2]*cropScale, S.crop[3]*cropScale];
   cx.fillStyle = "rgba(0,0,0,.55)";
   cx.beginPath(); cx.rect(0,0,W,H);
-  const isCircle = !(S.style === "hatch" && S.params.hatch.shape === "rect");
-  if(isCircle) cx.arc(x+w/2, y+w/2, w/2, 0, Math.PI*2, true); else cx.rect(x+w, y, -w, w);
+  const isCircle = !freeCrop() && !(S.style === "hatch" && S.params.hatch.shape === "rect");
+  if(isCircle) cx.arc(x+w/2, y+w/2, w/2, 0, Math.PI*2, true); else cx.rect(x+w, y, -w, h);
   cx.fill("evenodd");
-  cx.strokeStyle = "#fff"; cx.lineWidth = 1.5; cx.strokeRect(x, y, w, w);
-  cx.fillStyle = "#fff"; cx.fillRect(x+w-7, y+w-7, 10, 10);
+  cx.strokeStyle = "#fff"; cx.lineWidth = 1.5; cx.strokeRect(x, y, w, h);
+  cx.fillStyle = "#fff"; cx.fillRect(x+w-7, y+h-7, 10, 10);
 }
+// square crop for circle styles, free rectangle for scribble
+function freeCrop(){ return S.style === "scribble"; }
 function clampCrop(){
   const iw = S.image.width, ih = S.image.height;
-  let [x,y,w] = S.crop; w = Math.max(16, Math.min(w, iw, ih));
-  x = Math.max(0, Math.min(x, iw-w)); y = Math.max(0, Math.min(y, ih-w));
-  S.crop = [Math.round(x), Math.round(y), Math.round(w), Math.round(w)];
+  let [x,y,w,h] = S.crop;
+  if(freeCrop()){ w = Math.max(16, Math.min(w, iw)); h = Math.max(16, Math.min(h, ih)); }
+  else { w = Math.max(16, Math.min(w, iw, ih)); h = w; }
+  x = Math.max(0, Math.min(x, iw-w)); y = Math.max(0, Math.min(y, ih-h));
+  S.crop = [Math.round(x), Math.round(y), Math.round(w), Math.round(h)];
+}
+function cropForStyle(){
+  if(!S.image) return;
+  if(freeCrop()) S.crop = [0, 0, S.image.width, S.image.height];
+  else S.crop = S.image.crop.slice();
 }
 let dragMode = null, dragStart = null;
 cc.onpointerdown = e => {
   const r = cc.getBoundingClientRect(), px = (e.clientX-r.left)/cropScale + cropView[0], py = (e.clientY-r.top)/cropScale + cropView[1];
-  const [x,y,w] = S.crop, corner = 14/cropScale;
-  dragMode = (Math.abs(px-(x+w)) < corner && Math.abs(py-(y+w)) < corner) ? "resize" : "move";
+  const [x,y,w,h] = S.crop, corner = 14/cropScale;
+  dragMode = (Math.abs(px-(x+w)) < corner && Math.abs(py-(y+h)) < corner) ? "resize" : "move";
   dragStart = {px, py, crop:S.crop.slice()}; cc.setPointerCapture(e.pointerId);
 };
 cc.onpointermove = e => {
   if(!dragMode) return;
   const r = cc.getBoundingClientRect(), px = (e.clientX-r.left)/cropScale + cropView[0], py = (e.clientY-r.top)/cropScale + cropView[1];
-  const [x,y,w] = dragStart.crop;
-  if(dragMode === "move") S.crop = [x + px - dragStart.px, y + py - dragStart.py, w, w];
-  else S.crop = [x, y, Math.max(px-x, py-y), 0];
-  S.crop[3] = S.crop[2]; clampCrop(); drawCrop();
+  const [x,y,w,h] = dragStart.crop;
+  if(dragMode === "move") S.crop = [x + px - dragStart.px, y + py - dragStart.py, w, h];
+  else if(freeCrop()) S.crop = [x, y, px-x, py-y];
+  else { const s = Math.max(px-x, py-y); S.crop = [x, y, s, s]; }
+  clampCrop(); drawCrop();
 };
 cc.onpointerup = () => { if(dragMode){ dragMode = null; changed(); } };
 cc.onwheel = e => {
   e.preventDefault();
-  const [x,y,w] = S.crop, nw = w * (e.deltaY > 0 ? 1.05 : 0.95);
-  S.crop = [x - (nw-w)/2, y - (nw-w)/2, nw, nw]; clampCrop(); drawCrop();
+  const [x,y,w,h] = S.crop, f = e.deltaY > 0 ? 1.05 : 0.95, nw = w*f, nh = h*f;
+  S.crop = [x - (nw-w)/2, y - (nh-h)/2, nw, nh]; clampCrop(); drawCrop();
   clearTimeout(autoTimer); autoTimer = setTimeout(changed, 400);
 };
-$("cropReset").onclick = e => { e.preventDefault(); if(S.image){ S.crop = S.image.crop.slice(); drawCrop(); changed(); } };
+$("cropReset").onclick = e => { e.preventDefault(); if(S.image){ cropForStyle(); setCropView(); drawCrop(); changed(); } };
 window.addEventListener("resize", () => { if(S.image) drawCrop(); draw(); });
 
 // ---------------------------------------------------------------- render

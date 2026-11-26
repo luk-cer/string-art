@@ -101,6 +101,37 @@ def cmd_hatch(args):
     print(f"Wrote {args.output}.gcode / .svg / _preview.png")
 
 
+def cmd_scribble(args):
+    from .scribble import ScribbleConfig
+    angles = tuple(tuple(float(v) for v in a.split(":")) for a in args.hatch_angles.split(","))
+    cfg = ScribbleConfig(
+        paper=args.paper, portrait=args.portrait, padding_mm=args.padding, pen_mm=args.pen,
+        rotate=args.rotate, max_side=args.max_side, crop=tuple(args.crop) if args.crop else None,
+        gradient_threshold=args.gradient_threshold, cleanup_radius=args.cleanup_radius,
+        max_lines=args.max_lines, light_percentile=args.light_percentile,
+        trace_kernel_size=args.kernel, trace_kernel_sigma=args.sigma, remove_noise=args.denoise,
+        hatch=not args.no_hatch, hatch_sample_interval=args.hatch_interval,
+        hatch_max_length=args.hatch_max_length, hatch_angles=angles,
+        simplify_px=args.simplify, join_px=args.join, sampler=args.sampler,
+        workers=args.workers, seed=args.seed,
+    )
+    t0 = time.time()
+    res = pipeline.build_scribble(args.image, cfg, progress=print)
+    prof = _profile(args)
+    if args.feed:
+        prof.draw_feed = args.feed
+    stats = pipeline.export(res, args.output, prof, comment="scribble (gradient tracing)")
+    from types import SimpleNamespace
+    sa.render_preview(res.polylines, SimpleNamespace(paper=cfg.paper, portrait=cfg.portrait,
+                      padding_mm=cfg.padding_mm, diameter_mm=None, pen_mm=cfg.pen_mm),
+                      args.output + "_preview.png")
+    print(f"{res.info['traced_lines']} traced lines -> {len(res.polylines)} pen-down paths in "
+          f"{time.time()-t0:.1f}s; {res.info['mm_per_px']} mm/px, rotated={res.info['rotated']}")
+    print(f"ink {stats['draw_mm']/1000:.1f} m, travel {stats['travel_mm']/1000:.1f} m, "
+          f"{stats['pen_lifts']} pen lifts, ~{stats['est_minutes']:.0f} min")
+    print(f"Wrote {args.output}.gcode / .svg / _preview.png")
+
+
 def cmd_lines2gcode(args):
     """Convert the radon renderer JSON (unchanged look) into ordered G-code."""
     with open(args.json) as f:
@@ -205,6 +236,37 @@ def main(argv=None):
                    help="drop strokes shorter than N local line spacings")
     _add_gcode_args(h)
     h.set_defaults(fn=cmd_hatch)
+
+    c = sub.add_parser("scribble", help="gradient-tracing scribble (fast port of scribble-code/c_v25)")
+    c.add_argument("image")
+    c.add_argument("-o", "--output", default="out/scribble")
+    c.add_argument("--paper", default="A4", choices=list(PAPER_SIZES))
+    c.add_argument("--portrait", action="store_true")
+    c.add_argument("--padding", type=float, default=20.0)
+    c.add_argument("--pen", type=float, default=0.3)
+    c.add_argument("--rotate", default="auto", choices=["auto", "none", "90"])
+    c.add_argument("--max-side", type=int, help="downscale so the longer side is at most N px "
+                   "(controls line density on paper: aim for >= pen width per pixel)")
+    c.add_argument("--crop", type=int, nargs=4, metavar=("X", "Y", "W", "H"))
+    c.add_argument("--gradient-threshold", type=float, default=0.05)
+    c.add_argument("--cleanup-radius", type=int, default=4)
+    c.add_argument("--max-lines", type=int, default=10000)
+    c.add_argument("--light-percentile", type=float, default=1.0)
+    c.add_argument("--kernel", type=int, default=4, help="trace kernel size d")
+    c.add_argument("--sigma", type=float, default=2.0, help="trace kernel sigma")
+    c.add_argument("--denoise", action="store_true", help="non-local-means denoise first (slow)")
+    c.add_argument("--no-hatch", action="store_true")
+    c.add_argument("--hatch-interval", type=int, default=10)
+    c.add_argument("--hatch-max-length", type=int, default=150)
+    c.add_argument("--hatch-angles", default="210:0.5,150:0.7,240:0.85,120:0.95",
+                   help="angle:min_darkness pairs")
+    c.add_argument("--simplify", type=float, default=0.5, help="RDP tolerance in pixels")
+    c.add_argument("--join", type=float, default=1.5, help="join line ends closer than N px")
+    c.add_argument("--sampler", default="fast", choices=["fast", "exact"])
+    c.add_argument("--workers", type=int, default=0, help="processes for hatching (0 = all cores)")
+    c.add_argument("--seed", type=int, default=0)
+    _add_gcode_args(c)
+    c.set_defaults(fn=cmd_scribble)
 
     l = sub.add_parser("lines2gcode", help="radon renderer JSON -> G-code/SVG")
     l.add_argument("json")
