@@ -1,11 +1,24 @@
-# TODO / Review notes
+# Plotter project: log, state and plan
 
-Status key: `[x]` done on `claude/plotter-gcode-improvements-*`, `[ ]` open.
+Branch: `claude/plotter-gcode-improvements-*`. Status key: `[x]` done, `[ ]` open.
+Test images: `timik.jpg` (portrait, light face, grey wall) and `image35.jpg` (dense illustration)
+from the `add-scribble-code` branch.
 
-## 0. Direct G-code output (no more hand-editing)
+Contents:
+1. What we did and why (decision log, in order)
+2. Current state (what exists, how to run it)
+3. Development plan (prioritised)
+4. Appendix A: review of the original `radon_renderer`
+5. Appendix B: review of `scribble-code/` (scripts and G-code writers)
 
-The old workflow was: JSON → SVG (Inkscape) → svg2gcode → hand-edited header.
-The G-code that plotted correctly looked like:
+---
+
+## 1. What we did and why
+
+### 1.1 Direct G-code output (no more hand-editing)
+
+**Problem.** The old workflow was JSON → SVG (Inkscape) → svg2gcode → hand-edited header, and nobody
+remembered the edits. The file that plotted correctly used this dialect:
 
 ```
 G21
@@ -18,209 +31,229 @@ G4 P0.05
 G1 X.. Y.. F1500
 ```
 
-- [x] `plotter/gcode.py` writes exactly this dialect by default (3-decimal coords instead of `X50.77875100000003`)
-- [x] Every knob in a JSON profile (`python -m plotter profile --dump my_plotter.json`):
-      pen up/down commands, dwell, feed, header/footer, Y flip, offsets, optional `M0` pause every N mm (pen check)
-- [x] `python -m plotter lines2gcode output.json` converts existing radon renders **without changing the look**,
-      with nearest-neighbour ordering + segment reversal (sample file: pen-up travel 57.8 m → 0.7 m)
-- [x] SVG export alongside (`.svg`, mm units) so Inkscape / svg2gcode still works as a fallback
-- [ ] **Verify on the real plotter**: Y direction (`flip_y`), origin, Z values. If the old manual edit was something
-      else (e.g. a `G92 X0 Y0` homing line, `M3/M5` servo pen), put it in the profile `header`/`pen_up`/`pen_down`
-- [ ] Bounds check: refuse to write moves outside the paper / machine area
+**Done.**
+- [x] `plotter/gcode.py` writes exactly this dialect by default, 3 decimals instead of 14.
+- [x] Every machine detail lives in a JSON profile (`python -m plotter profile --dump my_plotter.json`):
+      pen up/down commands, dwell, feeds, header/footer, Y flip, offsets, `M0` pause every N mm.
+      **Why:** a header change becomes a config change, not a manual edit of every output file.
+- [x] Stroke ordering: greedy nearest neighbour with reversal; KD-tree version for 2000+ strokes.
+      Sample radon file: pen-up travel 57.8 m → 0.7 m.
+- [x] SVG written next to every G-code file as a fallback.
+- [x] Plot-time estimate counts pen lifts (`pen_move_s`), which dominate for scribble styles.
 
-## 1. String art portrait (priority)
+### 1.2 String art for pen (priority from the start)
 
-`python -m plotter stringart photo.jpg -o out/portrait` → `.gcode`, `.svg`, `_preview.png`, `_compare.png`, `.json`
+**Problem.** Nail-to-nail lines on a circle, drawn with a pen: unlike thread, ink has a fixed width and
+stacks opaquely, so naive greedy string art turns into a black mess.
 
-Done:
-- [x] Nails on a circle, greedy nail-to-nail line selection
-- [x] **Pen-width-aware ink model** (the anti-"black mess" part): each line deposits `pen_width × length` of ink,
-      overlaps combine as opaque ink `1-(1-c)(1-a)`, so dense areas saturate and stop attracting lines
-- [x] Asymmetric error (`--overshoot`): ink over areas lighter than the target costs more → clean highlights
-- [x] `--min-skip` (no short chords hugging the rim), no repeated chord
-- [x] `--nail-spread` mm: each visit to a nail lands at a slightly different point on the rim, so hundreds of
-      line ends don't pool into ink blobs at the nails
-- [x] Pen lifts when stuck (best line anywhere); `--continuous` for a single unbroken path
-- [x] Auto-crop trims white borders (e.g. `timik.png` is a small photo on a big white canvas), `--crop X Y W H` manual
-- [x] Ink length + plot-time estimate printed
+**Done.**
+- [x] Pen-width ink model: each line deposits pen width × length of ink; overlaps combine as
+      `1-(1-c)(1-a)`. Dense areas saturate and stop attracting lines. **Why:** physically honest
+      simulation is what prevents the black mess.
+- [x] Asymmetric error (`overshoot`): ink on areas lighter than the photo costs more → clean highlights.
+- [x] `min_skip`, no repeated chord, `nail_spread_mm` (line ends land at slightly different rim points so
+      hundreds of ends don't pool into blobs), pen lifts when stuck, `continuous` for a single path.
+- [x] `min_lines`: the solver stops when no line improves the picture (after ~270 lines on the test photo
+      with a 0.3 mm pen); this forces it to keep going.
+- [x] **Settings optimiser** (`plotter/tune.py`, `--auto`, UI "Suggest settings"): coordinate search over
+      overshoot, viewing cell, gamma, CLAHE, edge boost, darkness, vignette, min lines. Score =
+      SSIM − 0.5·MAE of the simulated plot vs a *fixed* reference at viewing blur. **Why fixed:** otherwise
+      changing gamma/CLAHE changes the target and games the score. Result: 0.47 → 0.60 (0.3 mm pen).
+      It consistently picks viewing cell 2.2 mm, gamma 1.2–1.5, low highlight protection, no CLAHE.
+- [x] **Finding: physics dominates.** A 190 mm circle with a 0.3 mm pen fits only ~450 lines before the light
+      face is "done"; a portrait can't form. A 0.1 mm pen gets ~3× the lines (score 0.72).
+- [x] **Curved chords** (`chords`): `poincare` = hyperbolic geodesics (meet the rim at 90°, bow towards the
+      centre, always inside); `warp` = the solver picks a bend per line from {0, ±0.5, ±1}. **Why:** more paths
+      through each area, arcs can follow round shapes. Result: warp 0.719 → 0.730; Poincaré-only is worse
+      (the solver piles short arcs into a fringe at the rim).
+- [x] **Tapered dashes** (`dashed`, `taper`, `dash_period_mm`): lines are solid in dark areas and break into
+      shorter, sparser dashes as the photo lightens, then fade out. The solver deposits ink by dash duty.
+      Per-line dash phase (golden ratio) avoids moiré. **Why:** a straight chord meant for the dark hair also
+      darkens the light face; dashes put ink only where it is needed. A hard on/off cut (first try) looked
+      like a stencil (0.74); the taper fixed it.
+      Result: **0.835** (best so far). Cost: ~14k pen lifts at 5 mm period, ~4.4 h plot.
 
-Open (in rough order of value):
-- [ ] **Quality is still limited**: on the test photo (3/4 profile, busy café background) ~1000 lines give
-      hair / face / jacket masses but not eyes/mouth. Ideas:
-  - [ ] Importance mask: weight the face region higher (manual ellipse in the UI, or face detection)
-  - [ ] Multi-scale error: compare blurred sim vs blurred target (viewer distance) + a fine-scale edge term
-  - [ ] Refinement pass after greedy: try removing / swapping each line (or simulated annealing) – usually a large win
-  - [ ] Allow *partial* chords (pen down between two points on the chord) for feature lines – breaks pure "string
-        look" but a plotter can do it; make it an option
-  - [ ] Several pens / grey levels (e.g. 0.1 grey + 0.3 black passes)
-- [ ] Choose start nail / stroke order to minimise pen lifts
-- [ ] Nail dots / tick marks option (decorative) and `--frame` circle (exists, untested on paper)
-- [ ] Pen-wear: optional `pause_every_mm` defaults per pen type (a fineliner won't do 300 m)
-- [ ] Recommended source photo: front-facing, even light, plain background, face filling the circle
+| String art, A4, 0.1 mm pen, test portrait | score | pen lifts | plot |
+|---|---|---|---|
+| straight | 0.719 | 21 | 2.5 h |
+| warp | 0.730 | 21 | 2.5 h |
+| warp + hard-cut dashes | 0.740 | 322 | 2.5 h |
+| warp + tapered dashes, 5 mm | 0.835 | 14k | 4.4 h |
 
-## 2. Better crosshatch (keep the current look as one style)
+### 1.3 Flow hatching (crosshatch that is not just parallel)
 
-Keep `radon_renderer` modes as-is (`lines2gcode` plots them unchanged). New style next to them:
-`python -m plotter hatch photo.jpg -o out/hatch` — **curved, not just parallel**.
+**Problem.** The original radon renders were families of straight parallel chords; crosshatching looked
+mechanical.
 
-- [x] **Flow hatching**: strokes are streamlines of a direction field from the image (structure tensor),
-      so layer 1 wraps around shapes (cheek, jaw, hair) instead of running as straight parallel chords
-- [x] **Tonal layering**: layer 2 crosses layer 1 (follows the gradient), layers 3/4 diagonal, each only in
-      darker tones (`--thresholds`); spacing varies continuously with darkness, min spacing = 2.5 x pen width
-- [x] Evenly-spaced streamline placement (Jobard–Lefer): seeds beside finished lines, lines stop when too close
-- [x] `--flow fixed` = classic straight crosshatch with the same tone logic, for comparison
-- [x] Layer-by-layer drawing, path-optimised (vectorised nearest neighbour), RDP-simplified strokes
-- [x] Circle (matches string art) or `--shape rect`
-- [x] Stubs: smoothed layer map (`--tone-smooth`), seeds only well inside a layer (`--seed-margin`),
-      min length relative to spacing (`--min-len-spacings`). Darkest layer: short-stroke ink 33% → 8%
-- [x] Seams: each line ends at its own randomly lowered threshold (`--overrun`), so ends are staggered
-- [x] Speed: ~2x faster with byte-identical output (vectorised seeding/stamping, list-based tracer, iterative RDP)
-- [x] `--tone-model coverage` (physically matched tones), `--merge-gap` (fewer pen lifts), `--outline LEVEL`
-- [x] Time estimate includes pen lifts (`pen_move_s` in the profile)
-- [ ] Faster still: numba/cython for the tracer (would add a dependency)
-- [ ] Remaining short strokes in converging flow (lines squeezed out) – try merging end-to-end neighbours
-- [ ] Optional outline pass (edge contours, simplified) on top of the hatching
-- [ ] Other non-parallel fills worth trying: concentric/spiral modulated by tone, stippling-to-TSP single line,
-      wave lines with amplitude ∝ darkness
-- [ ] Mix: string-art circle with flow-hatched features (eyes/mouth) on top
+**Done.**
+- [x] Strokes are streamlines of a structure-tensor direction field: layer 1 wraps around shapes, darker
+      tones add crossing layers (across, then diagonals). Evenly spaced streamlines (Jobard–Lefer), spacing
+      by tone, min spacing 2.5 × pen so dark areas never turn solid.
+- [x] Stubs and seams: smoothed layer map, seeds only well inside a layer, minimum length in spacings,
+      random overrun per line. Short-stroke ink in the darkest layer 33% → 8%.
+- [x] 2× faster with byte-identical output (list-based tracer, vectorised seeding/stamping, iterative RDP).
+- [x] Options: `tone_model=coverage` (ink-matched tones, ~45% more ink), `merge_gap` (−18% pen lifts),
+      `outline` levels.
 
-## 3. Preview / UI
+### 1.4 Your scribble code (`scribble-code/`, branch `add-scribble-code`)
 
-`python -m plotter ui` (stdlib server + one HTML page, no extra deps)
+**Problem.** Many versions, slow (image35: 201 s, plus 223 s for G-code on a *half-size* image), unclear
+lineage, and a copy of the G-code tools with changes.
 
-- [x] Upload photo, interactive square/circle crop (auto-zooms to content, auto-crop default)
-- [x] All three styles (string art, flow hatch, classic radon) with sliders; settings remembered per style
-- [x] Preview at true pen width, zoom/pan, travel moves overlay, animated plot order
-- [x] Target vs simulation view
-- [x] Editable plotter profile → downloads `.gcode` / `.svg` / `.json`
-- [ ] Progress bar / cancel for long string-art renders (currently a timer)
-- [ ] Load an existing `.gcode` file and preview it (pen-down vs travel, bounds vs paper)
-- [ ] Side-by-side compare of two renders (A/B of settings)
-- [ ] Importance brush: paint the face/eyes to weight them higher (string art + hatch)
+**Done.**
+- [x] Mapped the versions (Appendix B): `c_v25.py` is the latest tracer, `gcode_generator.py` the latest
+      writer. Found two real G-code bugs fixed between versions: `G4 P15` (= 15 *seconds* per pen move on
+      GRBL) and arcs always written as `G2`.
+- [x] `plotter/scribble.py`: port of c_v25 with **identical output** (checked line for line), ~25× faster.
+      `numba` was imported everywhere but never used; the cost was rebuilding a 9×9 weight grid 324k times,
+      full-image sampling per line, and a quadratic loop check.
+- [x] Presets `c_v25`, `app5`, `app7` reproduce those scripts exactly. Key difference found: in app5/7
+      `prob_mask = ipix` aliases the darkness map, so light areas stay white (accidental, but good practice).
 
-## 4. Review of existing `radon_renderer` code (bugs / cleanups)
+### 1.5 Scribble visual quality
 
-Correctness:
-- [ ] `compute_target_image`: `self.image` is already *darkness* (`1 - gray`), then the target uses
-      `1 - intensity_norm` again → the intensity term asks for lines in **light** areas. The comment says the
-      opposite. Fixing it changes the look, so do it as a flag (`--fix-intensity`) and compare.
-- [ ] `_render_with_residual` (hierarchical mode) swaps `self.image/edges` for the residual, but
-      `generate_chord_at_angle` reads only the precomputed sinogram, so the residual has **no effect** on placement.
-      Fix: recompute `radon(residual)` per angle (cheap at 190 px).
-- [ ] `spacing_metric` is constructed and reported in JSON but never used (`--spacing-metric` is a no-op);
-      `MSEOptimizedSpacingMetric` is a stub.
-- [ ] Modes 2/3 undo a trial with `self.lines[:-lines_to_add]`, but `generate_chord_at_angle` can return fewer
-      lines than requested → removes accepted lines. Use `del self.lines[n_before:]`.
-- [ ] Degenerate zero-length lines are emitted (first line of `final_mode4b.json`); filter `len < pen`.
-- [ ] `load_and_preprocess` centre-crops blindly; with padded images (`timik.png`) the subject is lost.
-- [ ] `render_lines_to_image` adds a fixed 0.1 per pixel regardless of pen width / pixel size → error metric
-      doesn't model what the paper will look like (see the ink model in `plotter/stringart.py`).
-- [ ] Sinogram index → position mapping assumes 1 px = 1 mm (true only because `target_size = int(diameter)`).
+**Problem.** Crosshatching "creates weird shapes".
 
-Hygiene:
-- [ ] `pyproject.toml`: description placeholder; `scipy` used but not declared; `matplotlib` used by
-      `compare_modes.py` but not declared; Python 3.14 pin is stricter than needed
-- [ ] Generated artefacts committed (`output.json`, `final_mode4b.json`, PNGs) – move to `examples/` or ignore
-- [ ] `.claude/settings.local.json` committed (local settings)
-- [ ] Debug print `jsorn arg` in `cli.py`
-- [ ] No tests – add small ones for geometry (chord endpoints on circle), G-code writer, ink model
-- [ ] `PAPER_SIZES` landscape only; add orientation flag to radon CLI (string art has `--portrait`)
+**Diagnosis (measured on image35):**
+- 56–76% of hatch lines make U-turns: they follow the gradient *vector*, which flips 180° across every ridge.
+- 29–46% spiral: a field rotated 30–60° makes streamlines circle around sinks.
+- No spacing between hatch lines: up to 491 lines through one pixel → ropes, knots, black fans.
+- Seeds only on edges → flat dark areas (no gradient) get almost nothing (37% ink vs 73% target).
 
-## 5. scribble-code (branch `add-scribble-code`) – review
+**Done** (all opt-in; defaults keep your original look):
+- [x] `hatch_mode=clean`: orientation field with consistent heading, tone-based spacing, total-turn limit,
+      sub-pixel steps, edge seeds then an even grid. U-turns/spirals 0%, max 3–4 lines per pixel.
+- [x] `hatch_fill_px`: flat areas borrow direction from surrounding structure.
+- [x] `main_momentum` (0.5) and `smooth_main` (3): calmer contours, no pixel staircase. Momentum 0.8 cuts corners.
+- [x] `hatch_mode=ink`: hatching only adds the darkness the contour lines haven't drawn
+      (`1 − (1−target)/(1−contours)` at viewing scale), second pass calibrates achieved density.
+      Most tone-accurate hatching (portrait error 0.208 → 0.083).
+- [x] `hatch_walls` (none | major | all): hatching stops at contours. Visible gain for clean/ink (crisp
+      silhouettes); barely any for legacy (its strokes are short and start inside shapes).
 
-What is what (single commit, so lineage is from content diffs):
+### 1.6 Squiggle tone layers
+
+**Goal (yours):** a pseudo-random squiggle that respects gradient flow, tonality and outlines; organic;
+may cross itself; "pen held and squiggling" with momentum and random perturbation.
+
+- [x] `squiggle` (experimental): maze curve on a quadtree (spanning-tree outline). Continuous and
+      tone-accurate, but grid-like. **Rejected as a direction:** Hilbert-like by construction.
+- [x] Research: closest published work is *Tone- and Feature-Aware Circular Scribble Art* (Chiu et al.
+      2015): a virtual path that avoids crossing features, followed by circular scribbles whose size and
+      speed carry tone.
+- [x] `freehand`: simulated hand. Loops around a wandering centre; momentum on the *turn rate* (smooth
+      arcs); random drift of loop size, speed, shape and orientation; tone by erasing a "still needed" map
+      as it draws; strokes of random length, then lift and restart where darkness is missing; crosses
+      itself and contours.
+- [x] Bands fixed (tight loops laid saturated ropes side by side): bigger minimum loops, faster travel,
+      wider erase footprint, less flow pull, more noise, random choice of the missing-ink direction.
+- [x] Walls `major` = drawn contours on edges that survive at a coarse scale (silhouettes, big shapes).
+- [x] Black pockets fixed: the look-ahead saw darkness behind walls, so a hand trapped in a small walled
+      pocket never left. Too-black pixels 2.3% → 1.1% (all walls 7.2% → 2.5%).
+- [x] No double counting: every squiggle/ink mode draws only the darkness the contour lines haven't.
+
+### 1.7 Preview UI
+
+- [x] `python -m plotter ui`: stdlib server + one HTML page. Upload, crop (square for circle styles,
+      free for scribble), true-pen-width preview, zoom, travel moves, plot-order animation, target vs
+      simulation, plotter profile, G-code/SVG/JSON downloads.
+- [x] Every option is a slider/toggle/dropdown, grouped; only the selected tone layer's section shows.
+- [x] Help text (`?` + tooltip) for every setting.
+- [x] Scribble circle mask; string-art "Suggest settings" button.
+- [x] Classic radon removed from the UI: on photos it produced chords with no likeness. Code kept for
+      `main.py` and `lines2gcode`.
+- [x] Compare page (published artifact "Plotter Style Evolution"): all styles on one portrait with stats.
+
+---
+
+## 2. Current state
+
+| Style | Command | Best settings so far |
+|---|---|---|
+| String art | `python -m plotter stringart photo.jpg` | 0.1 mm pen, `--chords warp --dashed`, `--auto` |
+| Flow hatch | `python -m plotter hatch photo.jpg` | `--tone-model coverage --merge-gap 4` |
+| Scribble | `python -m plotter scribble photo.jpg` | `--preset app5 --momentum 0.5 --smooth 3` + `--hatch-mode ink` or `freehand --density 0.55` |
+| UI | `python -m plotter ui` | everything above, with help |
+| Old renders | `python -m plotter lines2gcode render.json` | |
+
+Tests: `uv run --with pytest pytest -q tests` (19 tests).
+
+---
+
+## 3. Development plan (prioritised)
+
+### P1: needs the real plotter
+- [ ] **Plot one of each style on paper** and compare with the previews: line weight, pen bleed at
+      crossings, whether dashes read as tone.
+- [ ] Verify profile: Y direction (`flip_y`), origin, Z values, dwell. Record the working profile in the repo.
+- [ ] Measure real pen-lift time and feed to make plot-time estimates honest (`pen_move_s`, `draw_feed`).
+- [ ] Pen wear: suggested `pause_every_mm` per pen type (a 0.1 mm fineliner won't do 200 m).
+- [ ] Bounds check: refuse moves outside the paper / machine area.
+
+### P2: string art likeness and plot time
+- [ ] Join dashes along neighbouring lines into continuous dotted strokes, or order dashes along each
+      chord, to cut the ~14k pen lifts.
+- [ ] Poincaré fringe: minimum arc span (or penalty) so short rim-hugging arcs don't pile up.
+- [ ] Refinement after greedy: try removing/swapping lines (local search / annealing), typically a large gain.
+- [ ] Importance mask (face/eyes weighted higher): UI brush or face detection; also for hatching/scribble.
+- [ ] Include `chords`/`dashed` in the optimiser search; optimiser progress + cancel in the UI.
+- [ ] Two pens / grey levels (e.g. 0.1 mm grey pass + 0.3 mm black pass).
+
+### P3: scribble / freehand
+- [ ] Freehand speed: pure-Python step loop (~10–20 s at 500–600 px). Numba or a vectorised multi-hand step.
+- [ ] Freehand: occasional dark knots where the photo is very dark; try a loop-size floor tied to pen width.
+- [ ] Quadrant cleanup vectorised (app presets spend most time there).
+- [ ] Taper/stagger hatch ends at tone boundaries for clean/ink (like flow hatch `overrun`).
+- [ ] Optional fast arc fitting (G2/G3) to shrink G-code, with correct > 180° handling.
+- [ ] 2-opt refinement of stroke order on top of the KD greedy.
+
+### P4: flow hatch
+- [ ] Short strokes where flow converges: merge end-to-end neighbours.
+- [ ] Other non-parallel fills: tone-modulated spiral/concentric, stipple → TSP single line, wave lines.
+- [ ] Mix styles: string-art circle with hatched features on top.
+
+### P5: UI and project hygiene
+- [ ] Progress bar / cancel for long renders; load and preview an existing `.gcode`.
+- [ ] A/B compare inside the UI (the compare page does this for fixed renders).
+- [ ] Move the compare page and its renders into `docs/` if it should live in the repo.
+- [ ] `pyproject.toml`: description, declare `scipy`/`matplotlib`, relax the Python 3.14 pin.
+- [ ] Move generated artefacts (`output.json`, `final_mode4b.json`, PNGs) to `examples/` or ignore them;
+      `.claude/settings.local.json` shouldn't be committed.
+- [ ] Decide whether `radon_renderer` stays (see Appendix A) or is archived.
+
+---
+
+## Appendix A: review of the original `radon_renderer`
+
+Not fixed (the style is no longer offered in the UI). Correctness issues found:
+- `compute_target_image`: `self.image` is already darkness, then the target uses `1 - intensity_norm` again,
+  so the intensity term asks for lines in **light** areas.
+- `_render_with_residual` (hierarchical) swaps in the residual, but `generate_chord_at_angle` reads only the
+  precomputed sinogram, so the residual has no effect.
+- `spacing_metric` is constructed and reported but never used; `MSEOptimizedSpacingMetric` is a stub.
+- Modes 2/3 undo a trial with `self.lines[:-lines_to_add]`, but fewer lines may have been added → removes
+  accepted lines.
+- Zero-length lines emitted; blind centre crop loses the subject in padded images; render adds a fixed 0.1
+  per pixel regardless of pen width; sinogram position mapping assumes 1 px = 1 mm.
+- Hygiene: debug print `jsorn arg` in `cli.py`; `PAPER_SIZES` landscape only.
+
+## Appendix B: review of `scribble-code/`
 
 | File | What it is |
 |---|---|
-| `app.py`, `app2.py`, `app3py`(= `app4.py`), `app5-7.py` | early notebook-style scripts, each a copy-paste evolution; app5+ add G-code |
-| `image2sketch.py` | first `SketchConverter` class (zuzka.jpg) |
-| `c_v14.py` → `c_v22.py` → **`c_v25.py`** | successive SketchConverter versions; **c_v25 is the latest** (adaptive cleanup from intensity+variance, optional NL-means denoise) |
-| `gcode_old.py` | first G-code writer (DPI scale, pen lift per line); has a broken top-level call (`lines2` undefined) |
-| `gcode_utils.py` | merge (Eulerian), greedy+2-opt ordering, line/arc fitting (`GeometryOptimizer`), several G-code writers |
-| `path_optimizer.py` | `PathOptimizer` / `PathOptimizerV2` (same code + comments): KD-tree greedy + windowed 2-opt |
-| `gcode_generator.py` | **latest** writer `GCodeGenerator`: fit-to-page, arc sanitising, G2/G3 by cross product |
-| `plotter.py`, `plotter_v2.py`, `rpi-plotter_app.py` | unrelated: 2-servo arm plotter kinematics on RP2040 (MicroPython) |
+| `app.py`, `app2.py`, `app3py` (= `app4.py`), `app5–7.py` | notebook-style scripts, each a copy-paste evolution; app5+ add G-code |
+| `image2sketch.py` | first `SketchConverter` class |
+| `c_v14.py` → `c_v22.py` → **`c_v25.py`** | SketchConverter versions; c_v25 is the latest |
+| `gcode_old.py` | first G-code writer; broken top-level call (`lines2` undefined) |
+| `gcode_utils.py` | Eulerian merge, greedy+2-opt ordering, line/arc fitting, several writers |
+| `path_optimizer.py` | `PathOptimizer` / `PathOptimizerV2`: KD-tree greedy + windowed 2-opt |
+| `gcode_generator.py` | **latest** writer: fit-to-page, arc sanitising, G2/G3 by cross product |
+| `plotter.py`, `plotter_v2.py`, `rpi-plotter_app.py` | separate: 2-servo arm plotter on RP2040 (MicroPython) |
 
-G-code changes found across the versions:
-- [x] Dwell fixed: early writers emit `G4 P15` (GRBL: P = **seconds** → 15 s per pen move; image35.gcode would
-      pause ~125 h). `GCodeGenerator` uses `P{ms/1000}` → `P0.015`. Our writer: `dwell_s` (default 0.05, like the
-      hand-edited file).
-- [x] Arc direction: `to_gcode`, `to_gcode_a4`, `to_gcode_continuous` always emit `G2` (half the arcs drawn the
-      wrong way – image4.jpg.gcode has 153k G2 and 0 G3). `GCodeGenerator` picks G2/G3 by cross product.
-- [ ] `GCodeGenerator` still assumes every arc is < 180° (center side ⇒ direction); a fitted arc > 180° would be
-      drawn as its complement. Our port avoids arcs (RDP polylines) – optional arc fitting could be added back.
-- [ ] `GCodeGenerator`: no Y flip; X = image row, so on a bottom-left-origin plotter the image is rotated 90°
-      (our `--rotate auto` does this explicitly). Fit-to-page uses the drawing's bounding box, not the image.
-- [ ] `generate_final_gcode` rotation maps Y negative (`ny = -nx`) and prints 14 decimals – unused now.
-
-Performance (image35 736x1093):
-- [x] Tracing: 201 s → 8 s, identical output (`plotter/scribble.py`; see its docstring for what changed)
-- [x] G-code: `GeometryOptimizer` arc DP took 223 s for the *half-size* image; replaced by vectorised RDP +
-      end joining + KD-tree ordering (~3 s full size). Fewer pen lifts (2748 vs 4159 on half size); G-code file
-      is larger (line segments instead of arcs).
-- [x] `numba` was imported in every c_v* file but never used
-- [ ] Optional fast arc fitting (G2/G3) to shrink files, with correct >180° handling
-- [ ] 2-opt refinement of stroke order (PathOptimizerV2 style) on top of KD greedy
-- [x] app5 / app7 reproduced as presets (identical lines to the original scripts on half-size image35;
-      44 s -> 4.8 s and 53 s -> 5.4 s). Differences vs c_v25: white cut (prob_mask aliases ipix in the scripts),
-      quadrant cleanup up to 20 px, stop at 0.1% gradient left, 10000-step lines, hatch angles 225/245/205/265,
-      hatch look-ahead 11x11 (trace() default d=5), hatch from longest (app5) / merged (app7) lines
-- [ ] app7 calls merge_lines before importing it (notebook-only); app5 imports finalize_and_generate_gcode,
-      which no longer exists in gcode_utils
-- [ ] Vectorise quadrant cleanup (app presets spend most time there)
-
-## 6. Scribble – visual quality (what made hatching look odd)
-
-Measured on image35 (half size), legacy hatching:
-- 56–76% of hatch lines make a U-turn: they follow the gradient *vector*, which flips 180° across every
-  dark line/ridge -> hooks, V shapes, back-tracking
-- 29–46% spiral (>270° total turn): a field rotated by 30–60° makes streamlines circle around sinks
-- no spacing between hatch lines: up to 491 hatch lines through one pixel -> ropes, knots, black fans
-- seeds only on main lines -> hatching follows edge density, not tone; flat dark areas (no gradient) get
-  almost nothing (photo test: 37% ink density vs 73% target darkness; main lines 0.6%)
-
-Done (all options, defaults keep the original look):
-- [x] `hatch_mode="clean"`: orientation field with consistent sign, per-direction spacing by tone,
-      total-turn limit, sub-pixel steps, edge seeds first then an even grid (fills flat darks: 61%)
-- [x] `hatch_fill_px`: flat areas borrow direction from a larger scale (lines wrap around shapes
-      instead of running in fixed parallel rows)
-- [x] `main_momentum` (0.5 recommended): no U-turns/spirals in main lines, calmer contours; 0.8 starts
-      cutting corners. `smooth_main` (3) removes the pixel staircase.
-- [x] `hatch_mode="ink"`: hatch target = 1 - (1 - target)/(1 - main-line ink) at viewing scale, spacing from
-      real pen coverage, second pass calibrates achieved vs requested density
-- [ ] Taper/stagger hatch ends at tone boundaries (as in flow hatch overrun)
-
-## 7. Squiggle tone layers
-
-- [x] `squiggle` (experimental): maze curve on a quadtree (spanning-tree outline). Continuous, tone-
-      accurate, but grid-like / Hilbert-like - too mechanical
-- [x] `freehand`: simulated hand - loops around a wandering centre; momentum on turn rate, OU drift of
-      loop size/speed/shape/orientation, tone by erasing a still-needed map, random stroke lengths,
-      restarts sampled by missing darkness; crosses contours by default
-- [x] freehand bands: caused by tight loops laying saturated "ropes" next to each other; fixed with bigger
-      min loops, faster travel, wider erase footprint, larger length budget, less flow pull, random
-      choice of the missing-ink direction
-- [x] freehand walls: none | major (drawn contours on coarse-scale edges) | all
-- [x] freehand pockets: the "where is ink missing" look-ahead saw darkness behind walls, so a hand trapped
-      in a small walled pocket kept being pulled at the wall and stayed, filling it solid. Look-ahead now
-      ignores samples in other walled areas; the erase footprint is also kept to the pen's own area
-      (region_ink). Too-black pixels on the test portrait: 2.3% -> 1.1% (all walls: 7.2% -> 2.5%)
-- [ ] freehand: speed (pure-Python step loop, ~10 s at 500 px)
-
-## 8. UI round
-
-- [x] Help text for every UI setting (? button + tooltip)
-- [x] String art: all settings in the UI; `min_lines` keeps drawing when the solver would stop early
-      (it stops when no line improves the picture - light photos, high highlight protection)
-- [x] Scribble: circle mask (`shape="circle"`, optional frame); lines clipped exactly at the rim
-- [x] Classic radon removed from the UI styles (code kept for main.py / lines2gcode)
-
-## 9. String art likeness
-
-- [x] `tune.suggest_stringart` / `--auto` / UI button: coordinate search scored by SSIM - 0.5*MAE of the
-      simulated plot vs a fixed reference at viewing blur (0.47 -> 0.60 at 0.3 mm pen)
-- [x] Curved chords: `chords=poincare|warp` (arcs stay inside the circle; Poincare meet the rim at 90 deg)
-- [x] Dashed lines with taper: dash duty follows tone (0.73 -> 0.835); cost: ~14k pen lifts at 5 mm period
-- [x] `hatch_walls` for legacy / clean / ink hatching (stop at major / all contours)
-- [ ] Poincare-only chords make a dense fringe of short arcs at the rim (solver likes them); limit min span
-- [ ] Dashed: join dashes of neighbouring lines into continuous "dotted" strokes to cut pen lifts
+G-code findings:
+- Fixed in your later versions: `G4 P15` → `P0.015` (GRBL P is seconds); G2/G3 chosen by cross product
+  (older writers always wrote G2; image4.jpg.gcode has 153k G2 and 0 G3).
+- Still open in `GCodeGenerator`: arcs > 180° would be drawn as their complement; no Y flip (image rows → X).
+- `generate_final_gcode` maps Y negative and prints 14 decimals (unused).
+- app7 uses `merge_lines` before importing it (notebook-only); app5 imports `finalize_and_generate_gcode`,
+  which no longer exists.
