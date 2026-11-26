@@ -67,7 +67,9 @@ class ScribbleConfig:
     hatch_keep_min: int = 4             # keep hatch lines with at least this many points (app5/7: 1)
     hatch_patch: int | None = None      # look-ahead patch radius for hatching (None = trace_kernel_size; app5/7: 5)
     # visual improvements (off by default = original look)
+    main_lines: bool = True             # trace the contour (main) lines; False = tone layer only
     hatch_mode: str = "legacy"          # legacy (original tracer) | clean (orientation field, spacing, no spirals)
+                                        # | squiggle (one meandering maze line following flow + tone)
                                         # | ink (clean + only adds the darkness main lines haven't drawn)
     hatch_spacing_min_px: float = 1.5   # clean: hatch line spacing in the darkest areas
     hatch_spacing_max_px: float = 4.0   # clean: spacing where a hatch layer fades in
@@ -79,6 +81,15 @@ class ScribbleConfig:
     hatch_view_px: float = 2.0          # ink-aware: blur (px) at which ink and target are compared ("viewing distance")
     hatch_ink_passes: int = 2           # ink-aware: 2 = hatch, measure achieved coverage, correct the request, redo
     hatch_fill_px: float = 30.0         # clean: flat areas borrow hatch direction from this larger scale (0 = off)
+    squiggle_min_cell: int = 0          # squiggle: smallest cell (px) = darkest tone; 0 = auto (4 pen widths)
+    squiggle_max_cell: int = 32         # squiggle: largest cell (px) = lightest drawn tone
+    squiggle_white: float = 0.08        # squiggle: leave areas needing less darkness than this blank
+    squiggle_gain: float = 1.0          # squiggle: >1 darker
+    squiggle_flow_bias: float = 1.0     # squiggle: 0 = random maze, ~1 = maze with a flow tendency, 3+ = rows
+    squiggle_angle: float = 0.0         # squiggle: corridor direction relative to the contours (deg)
+    squiggle_smooth: int = 5            # squiggle: rounding of the maze corners
+    squiggle_respect_outlines: bool = True  # squiggle: main contour lines act as walls (one squiggle per area)
+    squiggle_patch_px: float = 0.0      # squiggle: >0 = many local squiggles of about this size (px)
     smooth_main: int = 0                # moving-average window for main lines (0 = off): softens staircase
     main_momentum: float = 0.0          # 0..0.95: blend each step with the previous direction (and never
                                         # reverse onto itself) -> smoother, longer main lines; 0 = original
@@ -636,6 +647,49 @@ class Scribble:
             progress(f"  hatch lines: {len(new)} from {len(seeds)} seeds")
         return self
 
+    def _ink_target(self, progress=None):
+        """Darkness still missing after the main lines, at viewing scale:
+        main-line ink is drawn at the real pen width on paper, and ink combines
+        like 1 - (1 - main)(1 - extra) = target  ->  extra = 1 - (1 - T)/(1 - M)."""
+        from scipy.ndimage import gaussian_filter
+        c = self.cfg
+        mm_per_px = paper_fit(*self.pix.shape, c)[0]
+        pen_px = c.pen_mm / mm_per_px
+        main_ink = ink_coverage(self.lines, self.pix.shape, pen_px)
+        v = c.hatch_view_px
+        T = np.clip(gaussian_filter(self.ipix, v), 0, 0.97)
+        M = np.clip(gaussian_filter(main_ink, v), 0, 0.97)
+        darkness = np.clip(1 - (1 - T) / (1 - M), 0, 1)
+        self.main_ink, self.hatch_target = main_ink, darkness
+        if progress:
+            progress(f"  ink-aware: pen {pen_px:.2f} px, main lines cover {main_ink.mean()*100:.0f}% of the page, "
+                     f"still needed {darkness.mean()*100:.0f}% on average")
+        return darkness, pen_px, main_ink
+
+    def add_squiggle(self, progress=None):
+        """Tone + flow as one continuous meandering line per region (maze curve):
+        quadtree cells sized by the darkness still needed, random spanning tree
+        biased along the flow, outline of the tree = the squiggle."""
+        from .hatch import HatchConfig, direction_field
+        from .squiggle import SquiggleConfig, squiggle
+        c = self.cfg
+        darkness, pen_px, main_ink = self._ink_target(progress)
+        walls = None
+        if c.squiggle_respect_outlines and self.n_main:
+            from scipy.ndimage import binary_dilation
+            walls = binary_dilation(main_ink > 0.25)    # 4-connected barrier along every contour line
+        hc = HatchConfig(flow="contour", flow_smooth_mm=c.hatch_flow_smooth_px, flow_fill_mm=c.hatch_fill_px)
+        theta = direction_field(self.pix, hc, 1.0)
+        sq = SquiggleConfig(pen_px=pen_px, min_cell=c.squiggle_min_cell, max_cell=c.squiggle_max_cell,
+                            white=c.squiggle_white, gain=c.squiggle_gain, flow_bias=c.squiggle_flow_bias,
+                            angle_deg=c.squiggle_angle, smooth=c.squiggle_smooth, patch_px=c.squiggle_patch_px,
+                            seed=0 if c.seed is None else c.seed)
+        loops, st = squiggle(darkness, theta, sq, walls=walls)
+        self.lines.extend(loops)
+        if progress:
+            progress(f"  squiggle: {st['loops']} closed loops over {st['cells']} cells")
+        return self
+
     def add_clean_hatching(self, progress=None):
         """Hatching without U-turns, spirals or clumps: hatch directions from a
         smoothed *orientation* field (sign kept consistent along a line), lines
@@ -653,23 +707,10 @@ class Scribble:
                          layer_thresholds=tuple(max(0.0, t + c.hatch_threshold_shift) for _, t in angles))
         darkness = self.ipix
         if c.hatch_ink_aware or c.hatch_mode == "ink":
-            # what the main lines already draw, at the real pen width on paper
-            from scipy.ndimage import gaussian_filter
-            mm_per_px = paper_fit(*self.pix.shape, c)[0]
-            pen_px = c.pen_mm / mm_per_px
-            main_ink = ink_coverage(self.lines, self.pix.shape, pen_px)
-            v = c.hatch_view_px
-            T = np.clip(gaussian_filter(self.ipix, v), 0, 0.97)
-            M = np.clip(gaussian_filter(main_ink, v), 0, 0.97)
-            # ink combines like 1 - (1 - main)(1 - hatch) = target  ->  hatch = 1 - (1 - T)/(1 - M)
-            darkness = np.clip(1 - (1 - T) / (1 - M), 0, 1)
+            darkness, pen_px, main_ink = self._ink_target(progress)
             hc.tone_model = "coverage"           # spacing from real pen coverage of the remaining tone
             hc.pen_mm = pen_px                   # cell units = px
             hc.tone_smooth_mm = 0.0              # already at viewing scale
-            self.main_ink, self.hatch_target = main_ink, darkness
-            if progress:
-                progress(f"  ink-aware: pen {pen_px:.2f} px, main lines cover {main_ink.mean()*100:.0f}% of the page, "
-                         f"hatching asked for {darkness.mean()*100:.0f}% more")
         mask = np.ones(darkness.shape, dtype=bool)
         base = direction_field(self.pix, hc, 1.0)
         seeds = [(float(x), float(y)) for x, y in self.hatch_seeds()]
@@ -709,10 +750,15 @@ class Scribble:
         if self.cfg.seed is not None:
             np.random.seed(self.cfg.seed)
         self.preprocess()
-        self.trace_main_lines(progress)
+        if self.cfg.main_lines:
+            self.trace_main_lines(progress)
+        else:
+            self.magnitude[:] = 0
         self.n_main = len(self.lines)
         if self.cfg.hatch:
-            if self.cfg.hatch_mode in ("clean", "ink"):
+            if self.cfg.hatch_mode == "squiggle":
+                self.add_squiggle(progress)
+            elif self.cfg.hatch_mode in ("clean", "ink"):
                 self.add_clean_hatching(progress)
             else:
                 self.add_crosshatching(progress)
