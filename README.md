@@ -109,7 +109,9 @@ tune the sliders and press **Render** (or tick *auto*). The preview draws every
 line at true pen width; scroll to zoom, drag to pan, double-click to fit.
 *Travel moves* shows pen-up moves, ▶ animates the plot order, *Target* /
 *Simulation* show what the algorithm aims for vs. what it thinks it drew.
-Download the `.gcode`, `.svg` or `.json` from the bottom bar. The plotter
+Download the `.gcode`, `.svg` or `.json` from the bottom bar. In the Scribble style every option is
+a toggle, slider or dropdown, grouped into sections (source, contour lines, tone layer, the chosen
+tone layer's settings, output, advanced); only the section for the selected tone layer is shown. The plotter
 profile (pen up/down, dwell, feed, header, Y flip…) is editable in the sidebar
 and remembered in the browser. Files are kept in `out/ui/`.
 

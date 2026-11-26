@@ -42,6 +42,8 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--mute
 .check{display:flex;align-items:center;gap:8px;margin:7px 0}
 textarea{width:100%;min-height:52px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;font:12px ui-monospace,monospace;padding:6px}
 details{border-top:1px solid var(--line);margin-top:14px;padding-top:4px}
+details.grp{margin-top:6px}
+details.grp summary{text-transform:none;letter-spacing:0;font-size:13px;color:var(--ink)}
 summary{cursor:pointer;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600;padding:8px 0}
 .renderBar{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);padding:10px 16px;display:flex;gap:8px;align-items:center}
 .btn{border:0;border-radius:8px;padding:9px 14px;font:inherit;font-weight:600;cursor:pointer;background:var(--accent);color:var(--accent-ink)}
@@ -197,58 +199,100 @@ const STYLE_PARAMS = {
     {k:"seed", label:"Random seed", min:1, max:99, step:1, v:1},
   ],
   scribble: [
+    {group:"Source & layout"},
     {k:"preset", label:"Preset (fills the settings below)", type:"select", opts:["c_v25","app5","app7"], v:"c_v25", apply:true},
     {k:"max_side", label:"Max image side (0 = full)", unit:"px", min:0, max:3000, step:50, v:800},
     {k:"rotate", label:"Rotate", type:"select", opts:["auto","none","90"], v:"auto"},
+    {k:"white_cut", label:"Keep light areas white", min:0, max:0.6, step:0.01, v:0},
+    {k:"remove_noise", label:"Denoise first (slow)", type:"check", v:false},
+
+    {group:"Contour lines"},
+    {k:"main_lines", label:"Draw contour lines", type:"check", v:true},
     {k:"gradient_threshold", label:"Gradient threshold", min:0, max:0.3, step:0.01, v:0.05},
-    {k:"cleanup_radius", label:"Cleanup radius (spacing)", unit:"px", min:1, max:20, step:1, v:4},
-    {k:"max_lines", label:"Max main lines", min:100, max:30000, step:100, v:10000},
+    {k:"cleanup_mode", label:"Line spacing rule", type:"select", opts:["adaptive","quadrant"], v:"adaptive"},
+    {k:"cleanup_radius", label:"Line spacing (max gap)", unit:"px", min:1, max:20, step:1, v:4},
+    {k:"max_lines", label:"Max contour lines", min:100, max:30000, step:100, v:10000},
+    {k:"main_max_steps", label:"Max line length", unit:"px", min:100, max:10000, step:100, v:1000},
+    {k:"main_momentum", label:"Momentum (calmer lines)", min:0, max:0.95, step:0.05, v:0},
+    {k:"smooth_main", label:"Smoothing window", unit:"pts", min:0, max:9, step:1, v:0},
     {k:"light_percentile", label:"Light percentile", min:0, max:20, step:0.5, v:1},
     {k:"trace_kernel_size", label:"Trace kernel size", min:1, max:10, step:1, v:4},
     {k:"trace_kernel_sigma", label:"Trace kernel sigma", min:0.5, max:6, step:0.5, v:2},
-    {k:"hatch", label:"Cross-hatching", type:"check", v:true},
-    {k:"hatch_angles", label:"Hatch angle:darkness", type:"text", v:"210:0.5,150:0.7,240:0.85,120:0.95"},
-    {k:"hatch_sample_interval", label:"Hatch interval", unit:"px", min:2, max:40, step:1, v:10},
-    {k:"hatch_max_length", label:"Hatch max length", unit:"px", min:10, max:400, step:10, v:150},
-    {k:"hatch_mode", label:"Tone layer", type:"select", opts:["legacy","clean","ink","freehand","squiggle"], v:"legacy"},
-    {k:"main_lines", label:"Draw contour lines", type:"check", v:true},
-    {k:"freehand_density", label:"Freehand: density", min:0.1, max:1.5, step:0.05, v:0.55},
-    {k:"freehand_loop_min", label:"Freehand: loop size (dark)", unit:"px", min:1, max:12, step:0.5, v:4},
-    {k:"freehand_loop_max", label:"Freehand: loop size (light)", unit:"px", min:2, max:24, step:0.5, v:10},
-    {k:"freehand_advance", label:"Freehand: travel speed", min:0.05, max:1.5, step:0.05, v:0.5},
-    {k:"freehand_momentum", label:"Freehand: momentum", min:0.5, max:0.99, step:0.01, v:0.9},
-    {k:"freehand_noise", label:"Freehand: randomness of path", min:0, max:1.5, step:0.05, v:0.6},
-    {k:"freehand_tone_jitter", label:"Freehand: randomness seeking dark", min:0, max:1, step:0.05, v:0.7},
-    {k:"freehand_wobble", label:"Freehand: randomness of loops", min:0, max:1.5, step:0.05, v:0.35},
-    {k:"freehand_flow_pull", label:"Freehand: follow flow", min:0, max:2, step:0.05, v:0.25},
-    {k:"freehand_stroke_px", label:"Freehand: stroke length", unit:"px", min:50, max:3000, step:50, v:400},
-    {k:"freehand_walls", label:"Freehand: don't cross", type:"select", opts:["major","none","all"], v:"major"},
-    {k:"freehand_major_px", label:"Freehand: 'major' scale (6 = silhouette)", unit:"px", min:1, max:12, step:0.5, v:4},
-    {k:"hatch_view_px", label:"Ink-aware: viewing blur", unit:"px", min:0.5, max:6, step:0.5, v:2},
-    {k:"hatch_ink_passes", label:"Ink-aware: passes (1 lighter, 2 calibrated)", min:1, max:3, step:1, v:2},
-    {k:"hatch_spacing_min_px", label:"Clean hatch spacing (dark)", unit:"px", min:0.8, max:6, step:0.1, v:1.5},
-    {k:"hatch_spacing_max_px", label:"Clean hatch spacing (light)", unit:"px", min:1.5, max:12, step:0.5, v:4},
-    {k:"hatch_fill_px", label:"Clean: flat areas follow shapes at", unit:"px", min:0, max:120, step:5, v:30},
-    {k:"hatch_max_turn_deg", label:"Clean: max total turn", unit:"°", min:20, max:360, step:10, v:90},
-    {k:"main_momentum", label:"Main line momentum", min:0, max:0.95, step:0.05, v:0},
-    {k:"smooth_main", label:"Smooth main lines (window)", unit:"pts", min:0, max:9, step:1, v:0},
-    {k:"white_cut", label:"Keep light areas white", min:0, max:0.6, step:0.01, v:0},
-    {k:"cleanup_mode", label:"Line spacing rule", type:"select", opts:["adaptive","quadrant"], v:"adaptive"},
-    {k:"main_max_steps", label:"Main line max length", unit:"px", min:100, max:10000, step:100, v:1000},
-    {k:"min_magnitude_ratio", label:"Stop when gradient left <", type:"text", v:"1e-10"},
+
+    {group:"Tone layer"},
+    {k:"hatch", label:"Draw a tone layer", type:"check", v:true, rebuild:true},
+    {k:"hatch_mode", label:"Kind", type:"select", opts:["legacy","clean","ink","freehand","squiggle"], v:"legacy", rebuild:true},
+    {k:"hatch_angles", label:"Hatch angle:darkness pairs", type:"text", v:"210:0.5,150:0.7,240:0.85,120:0.95",
+     when:P => P.hatch && ["legacy","clean","ink"].includes(P.hatch_mode)},
+
+    {group:"Legacy hatching", when:P => P.hatch && P.hatch_mode === "legacy"},
+    {k:"hatch_sample_interval", label:"Seed interval", unit:"px", min:2, max:40, step:1, v:10},
+    {k:"hatch_adaptive_spacing", label:"Denser in darker areas", type:"check", v:true},
+    {k:"hatch_max_length", label:"Max hatch length", unit:"px", min:10, max:400, step:10, v:150},
     {k:"hatch_source", label:"Hatch from", type:"select", opts:["all","longest","merged"], v:"all"},
-    {k:"hatch_adaptive_spacing", label:"Denser hatching in darker areas", type:"check", v:true},
-    {k:"hatch_min_line_length", label:"Hatch only from lines longer than", unit:"px", min:0, max:50, step:1, v:3},
+    {k:"hatch_min_line_length", label:"Only from lines longer than", unit:"px", min:0, max:50, step:1, v:3},
     {k:"hatch_keep_min", label:"Keep hatch lines with at least", unit:"pts", min:1, max:20, step:1, v:4},
-    {k:"hatch_patch", label:"Hatch look-ahead (0 = kernel size)", unit:"px", min:0, max:10, step:1, v:0},
-    {k:"split_main", label:"Keep line halves separate (app5/7)", type:"check", v:false},
-    {k:"main_order", label:"Main line order", type:"select", opts:["none","sort","sort_merge"], v:"none"},
-    {k:"main_min_points", label:"Drop main lines shorter than", unit:"pts", min:1, max:10, step:1, v:2},
-    {k:"legacy_gradient_sum", label:"Legacy gradient sum (exact app5/7 replay)", type:"check", v:false},
+    {k:"hatch_patch", label:"Look-ahead (0 = kernel size)", unit:"px", min:0, max:10, step:1, v:0},
+
+    {group:"Clean / ink hatching", when:P => P.hatch && ["clean","ink"].includes(P.hatch_mode)},
+    {k:"hatch_spacing_min_px", label:"Spacing (dark)", unit:"px", min:0.8, max:6, step:0.1, v:1.5},
+    {k:"hatch_spacing_max_px", label:"Spacing (light)", unit:"px", min:1.5, max:12, step:0.5, v:4},
+    {k:"hatch_threshold_shift", label:"Start layers earlier (-) / later (+)", min:-0.4, max:0.4, step:0.05, v:-0.1},
+    {k:"hatch_max_turn_deg", label:"Max total turn", unit:"°", min:20, max:360, step:10, v:90},
+    {k:"hatch_clean_min_len", label:"Drop strokes shorter than", unit:"px", min:0, max:30, step:1, v:6},
+    {k:"hatch_flow_smooth_px", label:"Direction smoothing", unit:"px", min:1, max:20, step:0.5, v:6},
+    {k:"hatch_fill_px", label:"Flat areas follow shapes at", unit:"px", min:0, max:120, step:5, v:30},
+    {k:"hatch_max_length", label:"Max stroke length", unit:"px", min:10, max:400, step:10, v:150},
+    {k:"hatch_view_px", label:"Ink-aware: viewing blur", unit:"px", min:0.5, max:6, step:0.5, v:2, when:P => P.hatch_mode === "ink"},
+    {k:"hatch_ink_passes", label:"Ink-aware: passes (1 lighter, 2 calibrated)", min:1, max:3, step:1, v:2, when:P => P.hatch_mode === "ink"},
+
+    {group:"Freehand scribble", when:P => P.hatch && P.hatch_mode === "freehand"},
+    {k:"freehand_density", label:"Density", min:0.1, max:1.5, step:0.05, v:0.55},
+    {k:"freehand_loop_min", label:"Loop size (dark)", unit:"px", min:1, max:12, step:0.5, v:4},
+    {k:"freehand_loop_max", label:"Loop size (light)", unit:"px", min:2, max:24, step:0.5, v:10},
+    {k:"freehand_advance", label:"Travel speed", min:0.05, max:1.5, step:0.05, v:0.5},
+    {k:"freehand_momentum", label:"Momentum", min:0.5, max:0.99, step:0.01, v:0.9},
+    {k:"freehand_noise", label:"Randomness of path", min:0, max:1.5, step:0.05, v:0.6},
+    {k:"freehand_wobble", label:"Randomness of loops", min:0, max:1.5, step:0.05, v:0.35},
+    {k:"freehand_tone_jitter", label:"Randomness seeking dark", min:0, max:1, step:0.05, v:0.7},
+    {k:"freehand_flow_pull", label:"Follow flow", min:0, max:2, step:0.05, v:0.25},
+    {k:"freehand_stroke_px", label:"Stroke length before lifting", unit:"px", min:50, max:3000, step:50, v:400},
+    {k:"freehand_walls", label:"Don't cross contours", type:"select", opts:["major","none","all"], v:"major", rebuild:true},
+    {k:"freehand_major_px", label:"'Major' scale (6 = silhouette)", unit:"px", min:1, max:12, step:0.5, v:4, when:P => P.freehand_walls === "major"},
+    {k:"freehand_cross", label:"Chance to slip through a wall", min:0, max:1, step:0.02, v:0.08, when:P => P.freehand_walls !== "none"},
+    {k:"freehand_view_px", label:"Erase footprint", unit:"px", min:0.5, max:8, step:0.5, v:3},
+    {k:"freehand_budget", label:"Max line length (x needed)", min:1, max:15, step:0.5, v:6},
+    {k:"hatch_flow_smooth_px", label:"Flow smoothing", unit:"px", min:1, max:20, step:0.5, v:6},
+    {k:"hatch_fill_px", label:"Flat areas follow shapes at", unit:"px", min:0, max:120, step:5, v:30},
+
+    {group:"Squiggle maze (experimental)", when:P => P.hatch && P.hatch_mode === "squiggle"},
+    {k:"squiggle_gain", label:"Darkness", min:0.2, max:2, step:0.05, v:1},
+    {k:"squiggle_min_cell", label:"Smallest cell (0 = auto)", unit:"px", min:0, max:16, step:1, v:0},
+    {k:"squiggle_max_cell", label:"Largest cell", unit:"px", min:4, max:64, step:2, v:32},
+    {k:"squiggle_white", label:"Leave blank below darkness", min:0, max:0.5, step:0.01, v:0.08},
+    {k:"squiggle_flow_bias", label:"Follow flow (0 = random maze)", min:0, max:5, step:0.1, v:1},
+    {k:"squiggle_angle", label:"Corridor angle to contours", unit:"°", min:-90, max:90, step:5, v:0},
+    {k:"squiggle_smooth", label:"Round corners", unit:"pts", min:0, max:15, step:1, v:5},
+    {k:"squiggle_respect_outlines", label:"Don't cross contour lines", type:"check", v:true},
+    {k:"squiggle_patch_px", label:"Local patch size (0 = one maze)", unit:"px", min:0, max:200, step:5, v:0},
+    {k:"hatch_view_px", label:"Viewing blur", unit:"px", min:0.5, max:6, step:0.5, v:2},
+
+    {group:"Output"},
     {k:"simplify_px", label:"Simplify", unit:"px", min:0, max:3, step:0.1, v:0.5},
     {k:"join_px", label:"Join ends closer than", unit:"px", min:0, max:6, step:0.5, v:1.5},
-    {k:"remove_noise", label:"Denoise first (slow)", type:"check", v:false},
+    {k:"min_points_out", label:"Drop paths shorter than", unit:"pts", min:1, max:20, step:1, v:5},
     {k:"seed", label:"Random seed", min:0, max:99, step:1, v:0},
+
+    {group:"Advanced (script replay, speed)", closed:true},
+    {k:"min_magnitude_ratio", label:"Stop when gradient left <", type:"text", v:"1e-10"},
+    {k:"split_main", label:"Keep line halves separate (app5/7)", type:"check", v:false},
+    {k:"main_order", label:"Main line order", type:"select", opts:["none","sort","sort_merge"], v:"none"},
+    {k:"main_min_points", label:"Drop contour lines shorter than", unit:"pts", min:1, max:10, step:1, v:2},
+    {k:"min_points", label:"Drop any line shorter than", unit:"pts", min:1, max:10, step:1, v:1},
+    {k:"legacy_gradient_sum", label:"Legacy gradient sum (exact app5/7 replay)", type:"check", v:false},
+    {k:"hatch_ink_aware", label:"Ink-aware clean hatching (same as kind 'ink')", type:"check", v:false},
+    {k:"sampler", label:"Start-point sampler", type:"select", opts:["fast","exact"], v:"fast"},
+    {k:"separable_blur", label:"Fast (separable) blur", type:"check", v:true},
     {k:"workers", label:"Worker processes (0 = all)", min:0, max:16, step:1, v:0},
   ],
   radon: [
@@ -280,7 +324,7 @@ const store = {
   get(k, d){ try{ const v = localStorage.getItem("plotterui."+k); return v ? JSON.parse(v) : d; }catch(e){ return d; } },
   set(k, v){ try{ localStorage.setItem("plotterui."+k, JSON.stringify(v)); }catch(e){} },
 };
-const defaults = list => Object.fromEntries(list.map(p => [p.k, p.v]));
+const defaults = list => Object.fromEntries(list.filter(p => p.k).map(p => [p.k, p.v]));
 const S = {
   style: store.get("style", "stringart"),
   common: {...defaults(COMMON), ...store.get("common", {})},
@@ -302,7 +346,7 @@ function control(p, values, onChange){
     const w = document.createElement("label"); w.className = "check";
     w.innerHTML = `<input type="checkbox" id="${id}"> ${p.label}`;
     const c = w.querySelector("input"); c.checked = !!values[p.k];
-    c.onchange = () => { values[p.k] = c.checked; onChange(); };
+    c.onchange = () => { values[p.k] = c.checked; onChange(); if(p.rebuild) buildControls(); };
     return w;
   }
   const w = document.createElement("div"); w.className = "row";
@@ -314,7 +358,7 @@ function control(p, values, onChange){
     if(p.type === "select") el.innerHTML = p.opts.map(o => `<option>${o}</option>`).join("");
     else el.type = "text";
     el.value = values[p.k];
-    el.onchange = () => { values[p.k] = el.value; if(p.apply) applyPreset(el.value); else onChange(); };
+    el.onchange = () => { values[p.k] = el.value; if(p.apply) applyPreset(el.value); else { onChange(); if(p.rebuild) buildControls(); } };
     w.appendChild(el);
     return w;
   }
@@ -334,7 +378,24 @@ function buildControls(){
   COMMON.filter(p => !(p.not||[]).includes(S.style))
         .forEach(p => c.appendChild(control(p, S.common, changed)));
   const s = $("styleParams"); s.innerHTML = "";
-  STYLE_PARAMS[S.style].forEach(p => s.appendChild(control(p, S.params[S.style], changed)));
+  const P = S.params[S.style];
+  let box = s, groupVisible = true;
+  const openState = store.get("groups", {});
+  for(const p of STYLE_PARAMS[S.style]){
+    if(p.group){                                   // collapsible section, hidden when not relevant
+      groupVisible = !p.when || p.when(P);
+      if(!groupVisible) continue;
+      const d = document.createElement("details"); d.className = "grp";
+      const key = S.style + ":" + p.group;
+      d.open = key in openState ? openState[key] : !p.closed;
+      d.ontoggle = () => { const o = store.get("groups", {}); o[key] = d.open; store.set("groups", o); };
+      d.innerHTML = `<summary>${p.group}</summary>`;
+      s.appendChild(d); box = d;
+      continue;
+    }
+    if(!groupVisible || (p.when && !p.when(P))) continue;
+    box.appendChild(control(p, P, changed));
+  }
   $("styleTitle").textContent = {stringart:"String art", hatch:"Flow hatch", scribble:"Scribble", radon:"Classic radon"}[S.style];
   const pf = $("profileParams"); pf.innerHTML = "";
   PROFILE.forEach(p => pf.appendChild(control(p, S.profile, changedProfile)));
@@ -352,7 +413,7 @@ async function applyPreset(name){
     const v = {..._presets.defaults, ...(_presets.presets[name] || {})};
     const P = S.params.scribble;
     for(const p of STYLE_PARAMS.scribble){
-      if(KEEP_ON_PRESET.includes(p.k) || !(p.k in v)) continue;
+      if(!p.k || KEEP_ON_PRESET.includes(p.k) || !(p.k in v)) continue;
       let x = v[p.k];
       if(p.k === "hatch_angles") x = x.map(a => a.join(":")).join(",");
       else if(x === null) x = p.type === "text" ? "" : 0;
