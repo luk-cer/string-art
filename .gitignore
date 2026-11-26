@@ -9,3 +9,7 @@ wheels/
 # Virtual environments
 .venv
 *.png
+
+# plotter outputs
+out/
+*.gcode

@@ -9,3 +9,6 @@ dependencies = [
     "pillow>=12.1.0",
     "scikit-image>=0.26.0",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

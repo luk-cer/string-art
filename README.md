@@ -97,3 +97,55 @@ radon_renderer/
   cli.py           # CLI argument parsing
 main.py            # Entry point
 ```
+
+## Plotter output (G-code) and string art
+
+The `plotter` package writes G-code directly, in the same dialect as the
+hand-edited files that plotted correctly (`G21`, `G90`, `G0 Z5` pen up,
+`G0 Z0` pen down, `G4 P0.05` dwell, `G1 ... F1500`). Tweak it via a profile
+instead of editing output files:
+
+```bash
+uv run python -m plotter profile --dump my_plotter.json   # edit, then pass --profile my_plotter.json
+```
+
+### Existing renders -> G-code (same look)
+
+```bash
+uv run python main.py photo.png --mode hierarchical --output render.json
+uv run python -m plotter lines2gcode render.json -o out/render     # out/render.gcode + .svg
+```
+
+Lines are re-ordered (nearest neighbour, with reversal) to minimise pen-up travel.
+
+### String art portrait
+
+Nails on a circle, one line from nail to nail, chosen greedily with a
+pen-width-aware ink model so dark areas saturate instead of turning into a
+black mess.
+
+```bash
+uv run python -m plotter stringart photo.jpg -o out/portrait --paper A3 --pen 0.2 --nail-spread 1.5
+```
+
+Outputs `out/portrait.gcode`, `.svg`, `_preview.png` (true pen width),
+`_compare.png` (target vs simulation) and `.json` (nail sequence + settings).
+
+| Option | Default | Notes |
+|---|---|---|
+| `--nails` | 240 | nails on the circle |
+| `--lines` | 3000 | max lines; stops earlier when no line improves the image |
+| `--pen` | 0.3 | pen width mm – thinner pen = more lines = more detail |
+| `--pixel` | 0.6 | simulation cell mm ("viewing distance"); 1.0–1.6 gives smoother tones |
+| `--overshoot` | 3.0 | penalty for ink over light areas; lower = darker/denser, higher = cleaner highlights |
+| `--gamma` | 1.0 | >1 lightens midtones |
+| `--clahe` | 0.02 | local contrast boost (0 = off) |
+| `--vignette` | 0 | fade busy backgrounds towards the rim |
+| `--min-skip` | 15 | no chords between nails closer than this |
+| `--nail-spread` | 0 | mm; spreads line ends around each nail to avoid ink blobs |
+| `--continuous` | off | single unbroken path (default lifts the pen when stuck) |
+| `--crop X Y W H` | auto | source crop in pixels; auto trims white borders |
+| `--paper/--portrait/--diameter/--padding` | A4 | layout |
+
+See `TODO.md` for the review of the existing code and the roadmap
+(better crosshatching, preview UI, string-art quality).
