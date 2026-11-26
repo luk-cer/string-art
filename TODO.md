@@ -189,3 +189,13 @@ Done (all options, defaults keep the original look):
 - [x] `hatch_mode="ink"`: hatch target = 1 - (1 - target)/(1 - main-line ink) at viewing scale, spacing from
       real pen coverage, second pass calibrates achieved vs requested density
 - [ ] Taper/stagger hatch ends at tone boundaries (as in flow hatch overrun)
+
+## 7. Squiggle tone layers
+
+- [x] `squiggle` (experimental): maze curve on a quadtree (spanning-tree outline). Continuous, tone-
+      accurate, but grid-like / Hilbert-like - too mechanical
+- [x] `freehand`: simulated hand - loops around a wandering centre; momentum on turn rate, OU drift of
+      loop size/speed/shape/orientation, tone by erasing a still-needed map, random stroke lengths,
+      restarts sampled by missing darkness; crosses contours by default
+- [ ] freehand: parallel dark bands in very dark areas at high density (flow pull + deficit seeking)
+- [ ] freehand: speed (pure-Python step loop, ~10 s at 500 px)

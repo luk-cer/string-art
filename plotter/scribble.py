@@ -70,6 +70,7 @@ class ScribbleConfig:
     main_lines: bool = True             # trace the contour (main) lines; False = tone layer only
     hatch_mode: str = "legacy"          # legacy (original tracer) | clean (orientation field, spacing, no spirals)
                                         # | squiggle (one meandering maze line following flow + tone)
+                                        # | freehand (hand-like looping scribble strokes, tone by feedback)
                                         # | ink (clean + only adds the darkness main lines haven't drawn)
     hatch_spacing_min_px: float = 1.5   # clean: hatch line spacing in the darkest areas
     hatch_spacing_max_px: float = 4.0   # clean: spacing where a hatch layer fades in
@@ -90,6 +91,17 @@ class ScribbleConfig:
     squiggle_smooth: int = 5            # squiggle: rounding of the maze corners
     squiggle_respect_outlines: bool = True  # squiggle: main contour lines act as walls (one squiggle per area)
     squiggle_patch_px: float = 0.0      # squiggle: >0 = many local squiggles of about this size (px)
+    freehand_loop_min: float = 2.5      # freehand: loop radius in dark areas (px)
+    freehand_loop_max: float = 9.0      # freehand: loop radius in light areas (px)
+    freehand_advance: float = 0.35      # freehand: centre speed vs pen speed (lower = denser loops)
+    freehand_density: float = 0.7       # freehand: fraction of the missing darkness to draw (lighter < 1)
+    freehand_walls: bool = False        # freehand: treat contour lines as walls (False = cross freely)
+    freehand_momentum: float = 0.9      # freehand: inertia of turning (higher = longer smooth arcs)
+    freehand_flow_pull: float = 0.6     # freehand: pull along the contours/flow
+    freehand_noise: float = 0.35        # freehand: random turning
+    freehand_wobble: float = 0.35       # freehand: randomness of loop size/speed/shape
+    freehand_stroke_px: float = 400.0   # freehand: typical stroke length before lifting (px)
+    freehand_cross: float = 0.08        # freehand: chance to cross a contour instead of reflecting
     smooth_main: int = 0                # moving-average window for main lines (0 = off): softens staircase
     main_momentum: float = 0.0          # 0..0.95: blend each step with the previous direction (and never
                                         # reverse onto itself) -> smoother, longer main lines; 0 = original
@@ -690,6 +702,32 @@ class Scribble:
             progress(f"  squiggle: {st['loops']} closed loops over {st['cells']} cells")
         return self
 
+    def add_freehand(self, progress=None):
+        """Hand-like scribble: loops around a wandering centre with momentum and
+        random perturbation, tone by erasing the still-needed darkness as it
+        draws, reflecting off contour lines, strokes of random length then a
+        new start sampled where darkness is still missing."""
+        from .hatch import HatchConfig, direction_field
+        from .freehand import FreehandConfig, freehand
+        from scipy.ndimage import binary_dilation
+        c = self.cfg
+        target, pen_px, main_ink = self._ink_target(progress)
+        target = np.clip(target * c.freehand_density, 0, 1)
+        walls = binary_dilation(main_ink > 0.25) if (c.freehand_walls and self.n_main) else None
+        theta = direction_field(self.pix, HatchConfig(flow="contour", flow_smooth_mm=c.hatch_flow_smooth_px,
+                                                      flow_fill_mm=c.hatch_fill_px), 1.0)
+        fc = FreehandConfig(pen_px=pen_px, loop_min=c.freehand_loop_min, loop_max=c.freehand_loop_max,
+                            advance=c.freehand_advance, momentum=c.freehand_momentum,
+                            flow_pull=c.freehand_flow_pull, turn_noise=c.freehand_noise,
+                            wobble=c.freehand_wobble, stroke_px=c.freehand_stroke_px,
+                            cross_prob=c.freehand_cross, view_px=c.hatch_view_px,
+                            seed=0 if c.seed is None else c.seed)
+        strokes, st = freehand(target, theta, fc, walls=walls, progress=progress)
+        self.lines.extend(strokes)
+        if progress:
+            progress(f"  freehand: {st['strokes']} strokes, {st['length_px']:.0f} px, left {st['left']:.3f}")
+        return self
+
     def add_clean_hatching(self, progress=None):
         """Hatching without U-turns, spirals or clumps: hatch directions from a
         smoothed *orientation* field (sign kept consistent along a line), lines
@@ -758,6 +796,8 @@ class Scribble:
         if self.cfg.hatch:
             if self.cfg.hatch_mode == "squiggle":
                 self.add_squiggle(progress)
+            elif self.cfg.hatch_mode == "freehand":
+                self.add_freehand(progress)
             elif self.cfg.hatch_mode in ("clean", "ink"):
                 self.add_clean_hatching(progress)
             else:

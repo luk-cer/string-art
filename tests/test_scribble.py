@@ -87,3 +87,21 @@ def test_ink_mode_hatches_less_where_main_lines_already_draw(tmp_path):
     busy = ink.main_ink > 0.3
     if busy.any():
         assert ink.hatch_target[busy].mean() < ink.ipix[busy].mean()
+
+
+def test_freehand_mode_runs_and_is_smooth(tmp_path):
+    import numpy as np
+    from plotter.scribble import preset, Scribble, load_gray
+    p = _img(tmp_path)
+    cfg = preset("app5", max_lines=200, workers=1, hatch_mode="freehand", freehand_density=0.5)
+    sc = Scribble(load_gray(p, cfg), cfg)
+    sc.run()
+    strokes = sc.lines[sc.n_main:]
+    assert strokes
+    # momentum: consecutive pen steps never turn sharply (no jagged corners)
+    for l in strokes[:50]:
+        a = np.diff(np.asarray(l, float), axis=0)
+        a = a[np.hypot(*a.T) > 1e-6]
+        if len(a) > 2:
+            cosang = (a[1:] * a[:-1]).sum(1) / (np.hypot(*a[1:].T) * np.hypot(*a[:-1].T))
+            assert np.percentile(cosang, 5) > 0.3

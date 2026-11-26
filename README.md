@@ -210,6 +210,14 @@ Hatching versions (`--hatch-mode`, UI "Hatching"):
 | `clean` | no U-turns, spirals or clumped hatch lines; evenly spaced by tone; also fills flat dark areas |
 | `ink` | clean, but hatches only the darkness the main lines haven't drawn yet (main-line ink measured at the real pen width, then hatch density calibrated in a second pass) |
 
+Freehand scribble (`--hatch-mode freehand`): a simulated hand scribbling loops around a
+wandering centre, with momentum on its turning and random drift in path, loop size, speed and
+shape. It crosses itself and the contours, erases the darkness it has drawn as it goes, and after
+a stroke of random length lifts and restarts where darkness is still missing. Knobs:
+`--density` (0.7; lower = lighter), `--loops DARK LIGHT` (2.5 9 px), `--freehand-walls`
+(don't cross contours), `--no-main` (scribble only). Example:
+`--preset app5 --hatch-mode freehand --density 0.5 --momentum 0.5 --smooth 3`.
+
 Other opt-in improvements: `--momentum 0.5` (calmer main lines), `--smooth 3` (no pixel
 staircase). Example: `--preset app5 --hatch-mode ink --momentum 0.5 --smooth 3`.
 

@@ -108,7 +108,7 @@ def cmd_scribble(args):
          "sigma": "trace_kernel_sigma", "hatch_interval": "hatch_sample_interval",
          "simplify": "simplify_px", "join": "join_px", "white_cut": "white_cut",
          "hatch_mode": "hatch_mode", "momentum": "main_momentum", "smooth": "smooth_main",
-         "hatch_fill": "hatch_fill_px", "ink_passes": "hatch_ink_passes",
+         "hatch_fill": "hatch_fill_px", "ink_passes": "hatch_ink_passes", "density": "freehand_density",
          "cleanup_mode": "cleanup_mode", "hatch_source": "hatch_source"}
     keys = ["paper", "rotate", "max_side", "gradient_threshold", "cleanup_radius", "max_lines",
             "light_percentile", "hatch_max_length", "sampler", "workers", "seed"] + list(m)
@@ -123,6 +123,12 @@ def cmd_scribble(args):
         over["hatch"] = False
     if args.hatch_angles:
         over["hatch_angles"] = tuple(tuple(float(v) for v in a.split(":")) for a in args.hatch_angles.split(","))
+    if args.loops:
+        over["freehand_loop_min"], over["freehand_loop_max"] = args.loops
+    if args.freehand_walls:
+        over["freehand_walls"] = True
+    if args.no_main:
+        over["main_lines"] = False
     if args.hatch_spacing:
         over["hatch_spacing_min_px"], over["hatch_spacing_max_px"] = args.hatch_spacing
     over.setdefault("workers", 0)
@@ -275,9 +281,15 @@ def main(argv=None):
     c.add_argument("--denoise", action="store_true", help="non-local-means denoise first (slow)")
     c.add_argument("--no-hatch", action="store_true")
     c.add_argument("--hatch-source", choices=["all", "longest", "merged"])
-    c.add_argument("--hatch-mode", choices=["legacy", "clean", "ink"],
+    c.add_argument("--hatch-mode", choices=["legacy", "clean", "ink", "freehand", "squiggle"],
                    help="legacy: original; clean: no U-turns/spirals/clumps, evenly spaced, fills flat dark "
-                        "areas; ink: clean, but only adds the darkness the main lines haven't drawn")
+                        "areas; ink: clean, but only adds the darkness the main lines haven't drawn; "
+                        "freehand: hand-like looping scribble; squiggle: experimental maze curve")
+    c.add_argument("--density", type=float, help="freehand: fraction of missing darkness to draw (default 0.7)")
+    c.add_argument("--loops", type=float, nargs=2, metavar=("DARK", "LIGHT"),
+                   help="freehand: loop radius in px for dark / light areas (default 2.5 9)")
+    c.add_argument("--freehand-walls", action="store_true", help="freehand: don't cross contour lines")
+    c.add_argument("--no-main", action="store_true", help="no contour lines, tone layer only")
     c.add_argument("--ink-passes", type=int, help="ink mode: 1 = lighter, 2 = calibrated to the photo's tone (default)")
     c.add_argument("--hatch-spacing", type=float, nargs=2, metavar=("DARK", "LIGHT"),
                    help="clean: hatch spacing in px (default 1.5 4)")
