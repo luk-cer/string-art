@@ -57,7 +57,12 @@ class HatchConfig:
     step_mm: float = 0.5
     min_len_mm: float = 5.0
     max_len_mm: float = 120.0
-    max_turn_deg: float = 35.0        # stop at sharp turns / field singularities
+    max_turn_deg: float = 35.0
+    # anti-stub / anti-seam
+    tone_smooth_mm: float = 1.0       # smooth the darkness map that switches layers on/off
+    seed_margin: float = 0.05         # only start lines this much darker than the layer threshold
+    overrun: float = 0.10             # a started line may continue until threshold - U(0, overrun)
+    min_len_spacings: float = 4.0     # drop strokes shorter than this many local spacings        # stop at sharp turns / field singularities
     seed: int = 1
 
     def s_min(self):
@@ -136,8 +141,9 @@ def hatch_layer(darkness, mask, theta, threshold, cfg, px, rng):
     """Evenly spaced streamlines for one layer. Returns polylines in cell units."""
     h, w = darkness.shape
     smin, smax = cfg.s_min() / px, cfg.spacing_max_mm / px
-    u = np.clip((darkness - threshold) / max(1e-6, 1 - threshold), 0, 1)
-    active = mask & (darkness > threshold)
+    tone = ndimage.gaussian_filter(darkness, cfg.tone_smooth_mm / px) if cfg.tone_smooth_mm else darkness
+    u = np.clip((tone - threshold) / max(1e-6, 1 - threshold), 0, 1)
+    seedable = mask & (tone > threshold + cfg.seed_margin)
     spacing = smax - (smax - smin) * u            # cells
     cos_t, sin_t = np.cos(theta), np.sin(theta)
 
@@ -147,8 +153,11 @@ def hatch_layer(darkness, mask, theta, threshold, cfg, px, rng):
     max_steps = int(cfg.max_len_mm / cfg.step_mm)
     cos_turn = math.cos(math.radians(cfg.max_turn_deg))
 
+    end_thr = threshold
+
     def ok(y, x):
-        return 0 <= y < h and 0 <= x < w and active[int(y), int(x)] and not stop.hit(y, x)
+        return (0 <= y < h and 0 <= x < w and mask[int(y), int(x)]
+                and tone[int(y), int(x)] > end_thr and not stop.hit(y, x))
 
     def trace(y, x, sign):
         pts = []
@@ -191,15 +200,18 @@ def hatch_layer(darkness, mask, theta, threshold, cfg, px, rng):
             y, x = grid[gi]; gi += 1
         else:
             break
-        if not (0 <= y < h and 0 <= x < w) or not active[int(y), int(x)] or sep.hit(y, x):
+        if not (0 <= y < h and 0 <= x < w) or not seedable[int(y), int(x)] or sep.hit(y, x):
             continue
+        # staggered per-line end threshold: no stubs at ragged edges, no aligned seams
+        end_thr = threshold - cfg.overrun * rng.random()
         fwd = trace(y, x, 1.0)
         bwd = trace(y, x, -1.0)
         pts = bwd[::-1] + [(y, x)] + fwd
-        if (len(pts) - 1) * step * px < cfg.min_len_mm:
-            continue
         ys = np.array([p[0] for p in pts]); xs = np.array([p[1] for p in pts])
         sp = spacing[ys.astype(int), xs.astype(int)]
+        length = (len(pts) - 1) * step               # cells
+        if length * px < cfg.min_len_mm or length < cfg.min_len_spacings * sp.mean():
+            continue
         stop.stamp(ys[::2], xs[::2], sp[::2] * 0.5)
         sep.stamp(ys[::2], xs[::2], sp[::2] * 0.95)
         lines.append(pts)

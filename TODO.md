@@ -71,8 +71,10 @@ Keep `radon_renderer` modes as-is (`lines2gcode` plots them unchanged). New styl
 - [x] `--flow fixed` = classic straight crosshatch with the same tone logic, for comparison
 - [x] Layer-by-layer drawing, path-optimised (vectorised nearest neighbour), RDP-simplified strokes
 - [x] Circle (matches string art) or `--shape rect`
-- [ ] Stroke ends: taper by lifting slightly / shorten so ends don't form visible "seams" along tone boundaries
-- [ ] Stubs in very dark areas (short strokes squeezed between others) – merge or drop below a length
+- [x] Stubs: smoothed layer map (`--tone-smooth`), seeds only well inside a layer (`--seed-margin`),
+      min length relative to spacing (`--min-len-spacings`). Darkest layer: short-stroke ink 33% → 8%
+- [x] Seams: each line ends at its own randomly lowered threshold (`--overrun`), so ends are staggered
+- [ ] Remaining short strokes in converging flow (lines squeezed out) – try merging end-to-end neighbours
 - [ ] Optional outline pass (edge contours, simplified) on top of the hatching
 - [ ] Other non-parallel fills worth trying: concentric/spiral modulated by tone, stippling-to-TSP single line,
       wave lines with amplitude ∝ darkness
