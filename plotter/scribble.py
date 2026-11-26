@@ -91,14 +91,18 @@ class ScribbleConfig:
     squiggle_smooth: int = 5            # squiggle: rounding of the maze corners
     squiggle_respect_outlines: bool = True  # squiggle: main contour lines act as walls (one squiggle per area)
     squiggle_patch_px: float = 0.0      # squiggle: >0 = many local squiggles of about this size (px)
-    freehand_loop_min: float = 2.5      # freehand: loop radius in dark areas (px)
-    freehand_loop_max: float = 9.0      # freehand: loop radius in light areas (px)
-    freehand_advance: float = 0.35      # freehand: centre speed vs pen speed (lower = denser loops)
-    freehand_density: float = 0.7       # freehand: fraction of the missing darkness to draw (lighter < 1)
-    freehand_walls: bool = False        # freehand: treat contour lines as walls (False = cross freely)
+    freehand_loop_min: float = 4.0      # freehand: loop radius in dark areas (px); small loops make ropes/bands
+    freehand_loop_max: float = 10.0     # freehand: loop radius in light areas (px)
+    freehand_advance: float = 0.5       # freehand: centre speed vs pen speed (lower = denser loops)
+    freehand_density: float = 0.55      # freehand: fraction of the missing darkness to draw (lighter < 1)
+    freehand_walls: str = "major"       # freehand: contours it won't cross: none | major | all
+    freehand_major_px: float = 4.0      # freehand: scale (px) at which an edge counts as major (bigger = fewer)
+    freehand_view_px: float = 3.0       # freehand: width of the erase footprint (viewing blur, px)
+    freehand_budget: float = 6.0        # freehand: max line length as a multiple of what the tone needs
     freehand_momentum: float = 0.9      # freehand: inertia of turning (higher = longer smooth arcs)
-    freehand_flow_pull: float = 0.6     # freehand: pull along the contours/flow
-    freehand_noise: float = 0.35        # freehand: random turning
+    freehand_flow_pull: float = 0.25    # freehand: pull along the contours/flow (high = parallel bands)
+    freehand_noise: float = 0.6         # freehand: random turning
+    freehand_tone_jitter: float = 0.7   # freehand: randomness when steering to missing ink
     freehand_wobble: float = 0.35       # freehand: randomness of loop size/speed/shape
     freehand_stroke_px: float = 400.0   # freehand: typical stroke length before lifting (px)
     freehand_cross: float = 0.08        # freehand: chance to cross a contour instead of reflecting
@@ -702,6 +706,26 @@ class Scribble:
             progress(f"  squiggle: {st['loops']} closed loops over {st['cells']} cells")
         return self
 
+    def _walls(self, mode, main_ink, major_px):
+        """Contours the tone layer must not cross. 'all': every drawn contour line;
+        'major': only drawn contour lines lying on edges that survive at a coarse
+        scale (silhouettes and big shape boundaries, not texture); 'none'."""
+        from scipy.ndimage import binary_dilation
+        if mode is True:
+            mode = "all"
+        if not mode or mode == "none" or not self.n_main:
+            return None
+        drawn = main_ink > 0.25
+        if mode == "all":
+            return binary_dilation(drawn)
+        from skimage.feature import canny
+        from skimage.morphology import remove_small_objects
+        coarse = canny(self.pix, sigma=major_px)
+        coarse = remove_small_objects(binary_dilation(coarse), max_size=int(20 * major_px))
+        major = drawn & binary_dilation(coarse, iterations=2)
+        self.major_walls = major
+        return binary_dilation(major)
+
     def add_freehand(self, progress=None):
         """Hand-like scribble: loops around a wandering centre with momentum and
         random perturbation, tone by erasing the still-needed darkness as it
@@ -713,14 +737,15 @@ class Scribble:
         c = self.cfg
         target, pen_px, main_ink = self._ink_target(progress)
         target = np.clip(target * c.freehand_density, 0, 1)
-        walls = binary_dilation(main_ink > 0.25) if (c.freehand_walls and self.n_main) else None
+        walls = self._walls(c.freehand_walls, main_ink, c.freehand_major_px)
         theta = direction_field(self.pix, HatchConfig(flow="contour", flow_smooth_mm=c.hatch_flow_smooth_px,
                                                       flow_fill_mm=c.hatch_fill_px), 1.0)
         fc = FreehandConfig(pen_px=pen_px, loop_min=c.freehand_loop_min, loop_max=c.freehand_loop_max,
                             advance=c.freehand_advance, momentum=c.freehand_momentum,
                             flow_pull=c.freehand_flow_pull, turn_noise=c.freehand_noise,
+                            tone_jitter=c.freehand_tone_jitter,
                             wobble=c.freehand_wobble, stroke_px=c.freehand_stroke_px,
-                            cross_prob=c.freehand_cross, view_px=c.hatch_view_px,
+                            cross_prob=c.freehand_cross, view_px=c.freehand_view_px, budget=c.freehand_budget,
                             seed=0 if c.seed is None else c.seed)
         strokes, st = freehand(target, theta, fc, walls=walls, progress=progress)
         self.lines.extend(strokes)

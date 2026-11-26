@@ -125,8 +125,10 @@ def cmd_scribble(args):
         over["hatch_angles"] = tuple(tuple(float(v) for v in a.split(":")) for a in args.hatch_angles.split(","))
     if args.loops:
         over["freehand_loop_min"], over["freehand_loop_max"] = args.loops
-    if args.freehand_walls:
-        over["freehand_walls"] = True
+    if args.walls:
+        over["freehand_walls"] = args.walls
+    if args.major_scale:
+        over["freehand_major_px"] = args.major_scale
     if args.no_main:
         over["main_lines"] = False
     if args.hatch_spacing:
@@ -285,10 +287,12 @@ def main(argv=None):
                    help="legacy: original; clean: no U-turns/spirals/clumps, evenly spaced, fills flat dark "
                         "areas; ink: clean, but only adds the darkness the main lines haven't drawn; "
                         "freehand: hand-like looping scribble; squiggle: experimental maze curve")
-    c.add_argument("--density", type=float, help="freehand: fraction of missing darkness to draw (default 0.7)")
+    c.add_argument("--density", type=float, help="freehand: fraction of missing darkness to draw (default 0.55)")
     c.add_argument("--loops", type=float, nargs=2, metavar=("DARK", "LIGHT"),
-                   help="freehand: loop radius in px for dark / light areas (default 2.5 9)")
-    c.add_argument("--freehand-walls", action="store_true", help="freehand: don't cross contour lines")
+                   help="freehand: loop radius in px for dark / light areas (default 4 10)")
+    c.add_argument("--walls", choices=["none", "major", "all"],
+                   help="freehand: contours not to cross (default major = silhouettes / big shapes)")
+    c.add_argument("--major-scale", type=float, help="freehand: px scale for 'major' (default 4; 6 = silhouette only)")
     c.add_argument("--no-main", action="store_true", help="no contour lines, tone layer only")
     c.add_argument("--ink-passes", type=int, help="ink mode: 1 = lighter, 2 = calibrated to the photo's tone (default)")
     c.add_argument("--hatch-spacing", type=float, nargs=2, metavar=("DARK", "LIGHT"),

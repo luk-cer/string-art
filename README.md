@@ -214,8 +214,11 @@ Freehand scribble (`--hatch-mode freehand`): a simulated hand scribbling loops a
 wandering centre, with momentum on its turning and random drift in path, loop size, speed and
 shape. It crosses itself and the contours, erases the darkness it has drawn as it goes, and after
 a stroke of random length lifts and restarts where darkness is still missing. Knobs:
-`--density` (0.7; lower = lighter), `--loops DARK LIGHT` (2.5 9 px), `--freehand-walls`
-(don't cross contours), `--no-main` (scribble only). Example:
+`--density` (0.55; lower = lighter), `--loops DARK LIGHT` (4 10 px), `--walls none|major|all`
+(default `major`: don't cross silhouettes / big shape edges, found as drawn contours lying on
+edges that survive at `--major-scale` px, 4 default, 6 = silhouette only), `--no-main` (scribble
+only). The scribble only adds the darkness the contour lines haven't drawn (contour ink is measured
+at the real pen width) and erases its own ink as it draws, so nothing is counted twice. Example:
 `--preset app5 --hatch-mode freehand --density 0.5 --momentum 0.5 --smooth 3`.
 
 Other opt-in improvements: `--momentum 0.5` (calmer main lines), `--smooth 3` (no pixel

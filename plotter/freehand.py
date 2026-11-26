@@ -34,23 +34,25 @@ from scipy import ndimage
 @dataclass
 class FreehandConfig:
     pen_px: float = 1.0
-    loop_min: float = 1.5            # loop radius in the darkest areas (px) - never smaller
-    loop_max: float = 6.0            # loop radius in light areas (px)
-    advance: float = 0.25            # centre speed relative to pen speed (lower = denser loops)
+    loop_min: float = 4.0            # loop radius in the darkest areas (px) - never smaller
+    loop_max: float = 10.0           # loop radius in light areas (px)
+    advance: float = 0.5             # centre speed relative to pen speed (lower = denser loops)
     step: float = 0.5                # pen step along the curve (px)
     momentum: float = 0.9            # 0..1 inertia of the turn rate (higher = longer smooth arcs)
-    flow_pull: float = 0.6           # pull along the flow direction
+    flow_pull: float = 0.25          # pull along the flow direction (high values make parallel bands)
     tone_pull: float = 0.8           # pull towards missing darkness
-    turn_noise: float = 0.35         # random drift of the turn rate
+    turn_noise: float = 0.6          # random drift of the turn rate
+    tone_jitter: float = 0.7         # 0 = steer to the average missing-ink direction, 1 = pick one at random
     wobble: float = 0.35             # randomness of loop size / speed / shape (0 = mechanical)
-    squash: float = 0.35             # mean ellipse flattening (0 = circles)
-    view_px: float = 2.0             # blur at which ink and target are compared
+    squash: float = 0.3              # mean ellipse flattening (0 = circles; capped at 0.5: no sharp tips)
+    view_px: float = 3.0             # blur at which ink and target are compared
     done: float = 0.06               # an area counts as finished below this missing darkness
     stroke_px: float = 400.0         # typical stroke length before lifting (px); random around this
     stroke_spread: float = 0.6       # log-normal spread of stroke lengths
     cross_prob: float = 0.08         # how easily the centre slips through a contour (0 = never)
     wall_margin: float = 3.0         # contour repulsion range beyond the loop radius (px)
     max_ink_px: float = 0.0          # safety cap on total line length (0 = auto)
+    budget: float = 6.0              # auto cap = budget x the line length the tone needs
     seed: int = 0
 
 
@@ -123,7 +125,7 @@ def freehand(target, theta, cfg: FreehandConfig, walls=None, progress=None):
             D[max(0, ys0):min(H, ys1), max(0, xs0):min(W, xs1)] -= a * K[ky0:ky1, kx0:kx1]
 
     total = D.sum() / max(cfg.pen_px, 1e-6)
-    budget = cfg.max_ink_px or 3.0 * total + 1000
+    budget = cfg.max_ink_px or cfg.budget * total + 1000
     strokes, cur = [], []
     drawn = 0.0
     sd = math.sqrt(1 - cfg.momentum ** 2)                     # OU noise scale for the given inertia
@@ -155,13 +157,27 @@ def freehand(target, theta, cfg: FreehandConfig, walls=None, progress=None):
             R = 2 * cfg.loop_max + 3
             tx = ty = 0.0
             best = 0.0
+            vals = []
             for k in range(8):
-                a = k * math.pi / 4
+                a = k * math.pi / 4 + 0.4 * rng.standard_normal()      # jittered look-ahead directions
                 sy, sx = int(cy + R * math.sin(a)), int(cx + R * math.cos(a))
-                if 0 <= sy < H and 0 <= sx < W:
-                    v = max(0.0, D[sy, sx])
-                    tx += v * math.cos(a); ty += v * math.sin(a)
-                    best = max(best, v)
+                v = max(0.0, D[sy, sx]) if (0 <= sy < H and 0 <= sx < W) else 0.0
+                vals.append((v, a))
+                tx += v * math.cos(a); ty += v * math.sin(a)
+                best = max(best, v)
+            if cfg.tone_jitter > 0 and best > 0:
+                # pick one direction at random, weighted by the ink it still needs
+                w = [v * v for v, _ in vals]
+                u = rng.random() * sum(w)
+                acc = 0.0
+                for wv, (v, a) in zip(w, vals):
+                    acc += wv
+                    if acc >= u:
+                        break
+                mag = math.hypot(tx, ty)
+                j = cfg.tone_jitter
+                tx = (1 - j) * tx + j * mag * math.cos(a)
+                ty = (1 - j) * ty + j * mag * math.sin(a)
             want_x = cfg.flow_pull * math.cos(fa) + cfg.tone_pull * tx
             want_y = cfg.flow_pull * math.sin(fa) + cfg.tone_pull * ty
             # soft repulsion from contours: grows as the centre gets within margin of a wall
@@ -180,7 +196,7 @@ def freehand(target, theta, cfg: FreehandConfig, walls=None, progress=None):
             # ---- hand rhythm drifts (mean-reverting random processes)
             s["rad_w"] += 0.05 * (0.0 - s["rad_w"]) + cfg.wobble * 0.3 * rng.standard_normal()
             s["spd_w"] += 0.05 * (0.0 - s["spd_w"]) + cfg.wobble * 0.3 * rng.standard_normal()
-            s["sq"] = min(0.85, max(0.0, s["sq"] + 0.05 * (cfg.squash - s["sq"])
+            s["sq"] = min(0.5, max(0.0, s["sq"] + 0.05 * (cfg.squash - s["sq"])
                                     + cfg.wobble * 0.1 * rng.standard_normal()))
             if rng.random() < 0.003:
                 s["spin"] = -s["spin"]

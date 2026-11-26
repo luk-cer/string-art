@@ -197,5 +197,9 @@ Done (all options, defaults keep the original look):
 - [x] `freehand`: simulated hand - loops around a wandering centre; momentum on turn rate, OU drift of
       loop size/speed/shape/orientation, tone by erasing a still-needed map, random stroke lengths,
       restarts sampled by missing darkness; crosses contours by default
-- [ ] freehand: parallel dark bands in very dark areas at high density (flow pull + deficit seeking)
+- [x] freehand bands: caused by tight loops laying saturated "ropes" next to each other; fixed with bigger
+      min loops, faster travel, wider erase footprint, larger length budget, less flow pull, random
+      choice of the missing-ink direction
+- [x] freehand walls: none | major (drawn contours on coarse-scale edges) | all
+- [ ] freehand: small enclosed pockets between major walls can fill solid (hand trapped bouncing inside)
 - [ ] freehand: speed (pure-Python step loop, ~10 s at 500 px)
