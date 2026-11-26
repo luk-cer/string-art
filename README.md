@@ -104,14 +104,17 @@ main.py            # Entry point
 uv run python -m plotter ui        # opens http://127.0.0.1:8765
 ```
 
-Upload a photo, drag the square crop, pick **String art / Flow hatch / Classic**,
+Upload a photo, drag the crop, pick **String art / Flow hatch / Scribble**,
 tune the sliders and press **Render** (or tick *auto*). The preview draws every
 line at true pen width; scroll to zoom, drag to pan, double-click to fit.
 *Travel moves* shows pen-up moves, ▶ animates the plot order, *Target* /
 *Simulation* show what the algorithm aims for vs. what it thinks it drew.
 Download the `.gcode`, `.svg` or `.json` from the bottom bar. In the Scribble style every option is
 a toggle, slider or dropdown, grouped into sections (source, contour lines, tone layer, the chosen
-tone layer's settings, output, advanced); only the section for the selected tone layer is shown. The plotter
+tone layer's settings, output, advanced); only the section for the selected tone layer is shown.
+Every setting has a **?** button (and hover tooltip) explaining what it does. Scribble can be
+masked to a circle (Shape → circle). The original radon renderer is no longer a UI style (on
+photos it doesn't resemble the image); it still works from `main.py` and `lines2gcode`. The plotter
 profile (pen up/down, dwell, feed, header, Y flip…) is editable in the sidebar
 and remembered in the browser. Files are kept in `out/ui/`.
 

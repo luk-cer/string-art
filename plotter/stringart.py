@@ -32,6 +32,7 @@ from radon_renderer.config import PAPER_SIZES
 class StringArtConfig:
     nails: int = 240
     max_lines: int = 3000
+    min_lines: int = 0              # keep adding the best line until this many, even past the target tone
     paper: str = "A4"
     portrait: bool = False          # paper orientation
     padding_mm: float = 10.0
@@ -202,13 +203,15 @@ def solve(target, weight, cfg, table=None, progress=None):
         g[blocked[i] | used[i]] = -np.inf
         return g
 
+    n_lines = 0
     for step in range(cfg.max_lines):
+        forced = n_lines < cfg.min_lines              # below the minimum: accept lines that don't help
         nxt, g = None, -np.inf
         if cur is not None:
             gain = gains_from(cur)
             nxt = int(np.argmax(gain))
             g = gain[nxt]
-        if g <= 0:
+        if g <= 0 and not (forced and cur is not None and np.isfinite(g)):
             if cfg.continuous and cur is not None:
                 break
             # pen up: best line anywhere
@@ -219,13 +222,13 @@ def solve(target, weight, cfg, table=None, progress=None):
                 if gi[j] > best[0]:
                     best = (gi[j], i, j)
             g, start, nxt = best
-            if not np.isfinite(g) or g <= 0:
+            if not np.isfinite(g) or (g <= 0 and not forced):
                 break
             strokes.append([start])
             cur = start
         if first_gain is None:
             first_gain = g
-        elif g < cfg.stop_ratio * first_gain:
+        elif g < cfg.stop_ratio * first_gain and not forced:
             break
 
         idx = table.cells[(min(cur, nxt), max(cur, nxt))]
@@ -233,6 +236,7 @@ def solve(target, weight, cfg, table=None, progress=None):
         used[cur, nxt] = used[nxt, cur] = True
         strokes[-1].append(nxt)
         cur = nxt
+        n_lines += 1
 
         if progress and step % 250 == 0:
             err = float(np.sum(w * (t - cov) ** 2) / np.sum(w))

@@ -118,6 +118,8 @@ class ScribbleConfig:
     seed: int | None = 0
     max_side: int | None = None         # downscale input so the longer side is at most this (pixels)
     crop: tuple | None = None           # (x, y, w, h) in source pixels
+    shape: str = "rect"                 # rect | circle (centred square, lines clipped to the inscribed circle)
+    frame: bool = False                 # circle: also draw the circle outline
     # paper / output
     paper: str = "A4"
     portrait: bool = False
@@ -404,6 +406,10 @@ def load_gray(image_path, cfg):
     if cfg.crop:
         x, y, w, h = cfg.crop
         img = img.crop((x, y, x + w, y + h))
+    if getattr(cfg, "shape", "rect") == "circle" and img.width != img.height:
+        sq = min(img.size)
+        x0, y0 = (img.width - sq) // 2, (img.height - sq) // 2
+        img = img.crop((x0, y0, x0 + sq, y0 + sq))
     if cfg.max_side and max(img.size) > cfg.max_side:
         s = cfg.max_side / max(img.size)
         img = img.resize((max(1, round(img.width * s)), max(1, round(img.height * s))),
@@ -456,6 +462,18 @@ class Scribble:
         if s > 0:
             mag /= s
         self.magnitude = mag
+        if c.shape == "circle":
+            # nothing starts or is wanted outside the circle (lines are clipped at the end too)
+            H, W = self.pix.shape
+            yy, xx = np.ogrid[:H, :W]
+            self.circle = ((H - 1) / 2, (W - 1) / 2, min(H, W) / 2 - 0.5)
+            cy, cx, R = self.circle
+            rr = np.sqrt((yy - cy) ** 2 + (xx - cx) ** 2)
+            self.magnitude[rr > R - 2] = 0
+            self.ipix[rr > R] = 0
+            s2 = self.magnitude.sum()
+            if s2 > 0:
+                self.magnitude /= s2
         self.tracer = _Tracer(self.ipix, d)
         self.gk_main = w2 if c.legacy_gradient_sum else None
         self._disks = {}
@@ -829,6 +847,14 @@ class Scribble:
                 self.add_crosshatching(progress)
         if self.cfg.smooth_main and self.cfg.smooth_main > 1:
             self.lines[:self.n_main] = [_smooth_line(l, self.cfg.smooth_main) for l in self.lines[:self.n_main]]
+        if self.cfg.shape == "circle":
+            cy, cx, R = self.circle
+            main = _clip_circle(self.lines[:self.n_main], cy, cx, R)
+            rest = _clip_circle(self.lines[self.n_main:], cy, cx, R)
+            self.lines, self.n_main = main + rest, len(main)
+            if self.cfg.frame:
+                t = np.linspace(0, 2 * np.pi, 721)
+                self.lines.append(list(zip((cy + R * np.sin(t)).tolist(), (cx + R * np.cos(t)).tolist())))
         if self.cfg.min_points > 1:
             self.lines = [l for l in self.lines if len(l) >= self.cfg.min_points]
         return self.lines
@@ -839,6 +865,47 @@ class Scribble:
         if len(pts):
             out[np.clip(pts[:, 0], 0, out.shape[0] - 1), np.clip(pts[:, 1], 0, out.shape[1] - 1)] = 0
         return out
+
+
+def _clip_circle(lines, cy, cx, R):
+    """Cut polylines to the inside of a circle, adding the exact crossing points."""
+    out = []
+    R2 = R * R
+    for l in lines:
+        if not l:
+            continue
+        a = np.asarray(l, dtype=float)
+        inside = (a[:, 0] - cy) ** 2 + (a[:, 1] - cx) ** 2 <= R2
+        if inside.all():
+            out.append(l)
+            continue
+        if len(a) == 1:
+            continue
+        cur = []
+        for i in range(len(a)):
+            p = (float(a[i, 0]), float(a[i, 1]))
+            if i:
+                if inside[i] != inside[i - 1]:
+                    # segment crosses the rim: solve |p0 + t d - c| = R
+                    p0, d = a[i - 1], a[i] - a[i - 1]
+                    f = p0 - (cy, cx)
+                    A, B, C = d @ d, 2 * f @ d, f @ f - R2
+                    disc = max(0.0, B * B - 4 * A * C)
+                    ts = [(-B - disc ** 0.5) / (2 * A), (-B + disc ** 0.5) / (2 * A)]
+                    t = min((t for t in ts if 0 <= t <= 1), default=0.5, key=lambda t: t if not inside[i - 1] else -t)
+                    q = (float(p0[0] + t * d[0]), float(p0[1] + t * d[1]))
+                    if inside[i - 1]:
+                        cur.append(q)
+                        if len(cur) > 1:
+                            out.append(cur)
+                        cur = []
+                    else:
+                        cur = [q]
+            if inside[i]:
+                cur.append(p)
+        if len(cur) > 1:
+            out.append(cur)
+    return out
 
 
 def _smooth_line(line, window):

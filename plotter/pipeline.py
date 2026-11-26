@@ -178,8 +178,10 @@ def build_scribble(image_path, cfg, progress=None):
 STYLES = {
     "stringart": (sa.StringArtConfig, build_stringart),
     "hatch": (hz.HatchConfig, build_hatch),
-    "radon": (RadonConfig, build_radon),
 }
+# The original radon renderer (build_radon / RadonConfig) stays available for scripts and
+# `python -m plotter lines2gcode`, but is no longer offered as a UI style: on photos it
+# produces families of full-circle chords that don't resemble the image.
 
 
 def _scribble_entry():

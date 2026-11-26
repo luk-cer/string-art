@@ -206,3 +206,11 @@ Done (all options, defaults keep the original look):
       ignores samples in other walled areas; the erase footprint is also kept to the pen's own area
       (region_ink). Too-black pixels on the test portrait: 2.3% -> 1.1% (all walls: 7.2% -> 2.5%)
 - [ ] freehand: speed (pure-Python step loop, ~10 s at 500 px)
+
+## 8. UI round
+
+- [x] Help text for every UI setting (? button + tooltip)
+- [x] String art: all settings in the UI; `min_lines` keeps drawing when the solver would stop early
+      (it stops when no line improves the picture - light photos, high highlight protection)
+- [x] Scribble: circle mask (`shape="circle"`, optional frame); lines clipped exactly at the rim
+- [x] Classic radon removed from the UI styles (code kept for main.py / lines2gcode)

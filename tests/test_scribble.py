@@ -124,3 +124,28 @@ def test_freehand_does_not_fill_enclosed_pockets_solid():
     inside = cov[52:68, 52:68].mean()
     outside = cov[10:40, 10:40].mean()
     assert inside < 2.5 * outside + 0.05      # pocket not drawn much denser than the open field
+
+
+def test_scribble_circle_mask_clips_everything(tmp_path):
+    import numpy as np
+    from plotter.scribble import preset, Scribble, load_gray
+    p = _img(tmp_path)
+    cfg = preset("app5", max_lines=200, workers=1, hatch_mode="clean", shape="circle", frame=True)
+    sc = Scribble(load_gray(p, cfg), cfg)
+    sc.run()
+    cy, cx, R = sc.circle
+    pts = np.array([q for l in sc.lines for q in l], float)
+    assert np.hypot(pts[:, 0] - cy, pts[:, 1] - cx).max() <= R + 1e-6
+
+
+def test_stringart_min_lines_forces_more_lines():
+    import numpy as np
+    from plotter import stringart as sa
+    size = 50
+    target = np.full((size, size), 0.05)          # very light: solver would stop almost at once
+    cfg = sa.StringArtConfig(nails=60, min_skip=5, max_lines=500, pixel_mm=2.0, diameter_mm=100)
+    free, _, _ = sa.solve(target, np.ones_like(target), cfg)
+    cfg.min_lines = 200
+    forced, _, _ = sa.solve(target, np.ones_like(target), cfg)
+    n = lambda st: sum(len(s) - 1 for s in st)
+    assert n(free) < 200 <= n(forced)

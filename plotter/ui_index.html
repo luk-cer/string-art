@@ -37,6 +37,11 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--mute
 .row input[type=number],.row select,.row input[type=text]{width:100%;background:var(--bg);color:var(--ink);
   border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:inherit}
 .row.wide{grid-template-columns:1fr}
+.info{border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:50%;width:17px;height:17px;
+  font:600 10px/1 system-ui,sans-serif;padding:0;margin-left:6px;cursor:pointer;flex:none;vertical-align:1px}
+.info:hover,.info:focus-visible{color:var(--accent);border-color:var(--accent)}
+.help{font-size:12px;line-height:1.45;color:var(--muted);background:var(--bg);border-radius:6px;padding:6px 8px;margin:-2px 0 6px}
+.row label{align-items:center}
 .row.sel{grid-template-columns:1fr 150px}
 .row .stack{display:flex;flex-direction:column;gap:3px}
 .check{display:flex;align-items:center;gap:8px;margin:7px 0}
@@ -89,11 +94,10 @@ main{display:grid;grid-template-rows:auto 1fr auto;min-width:0}
     </div>
 
     <h2>Style</h2>
-    <div class="seg" id="styleSeg" style="grid-template-columns:repeat(4,1fr)">
+    <div class="seg" id="styleSeg">
       <button data-style="stringart" class="on">String art</button>
       <button data-style="hatch">Flow hatch</button>
       <button data-style="scribble">Scribble</button>
-      <button data-style="radon">Classic</button>
     </div>
 
     <h2>Paper &amp; pen</h2>
@@ -155,13 +159,163 @@ const COMMON = [
   {k:"padding_mm", label:"Padding", unit:"mm", min:0, max:40, step:1, v:10},
   {k:"diameter_mm", label:"Diameter (0 = fit)", unit:"mm", min:0, max:400, step:5, v:0, not:["radon","scribble"]},
 ];
+// What each setting does. Key "style:param" overrides plain "param".
+const HELP = {
+  // paper & pen
+  paper: "Paper size the drawing is fitted to.",
+  portrait: "Turn the paper upright (tall) instead of landscape.",
+  pen_mm: "Your pen's line width. The algorithms model real ink with it: a wider pen reaches darkness with fewer lines.",
+  padding_mm: "Blank margin kept around the drawing on every side.",
+  diameter_mm: "Circle size. 0 = the largest circle that fits inside the padding.",
+
+  // string art
+  nails: "Points around the circle that lines run between. More nails = finer angles and detail, slower to compute.",
+  max_lines: "Upper limit on the number of lines. The solver usually stops earlier, when no line improves the picture.",
+  min_lines: "Keep drawing the best available line until this many, even after the tone target is reached. Use when it stops too early; the result gets darker than the photo.",
+  overshoot: "How strongly ink on areas lighter than the photo is penalised. Higher = cleaner highlights but fewer lines; lower = denser, darker.",
+  pixel_mm: "Size of the area the eye blends together (viewing distance). Larger = smoother tones and more lines before an area counts as done.",
+  max_darkness: "How dark the darkest photo tone is aimed for (1 = solid ink). Higher = more lines in dark areas.",
+  gamma: "Midtone curve. Above 1 lightens midtones (fewer lines), below 1 darkens them (more lines).",
+  contrast_clip: "Auto-contrast: ignore this percent of the darkest and lightest pixels when stretching the tones.",
+  clahe: "Local contrast boost. Brings out eyes and mouth in flat photos; too much turns noisy. 0 = off.",
+  edge_boost: "Extra weight on edges, so lines favour outlines and features over flat areas.",
+  vignette: "Fade the target to white towards the rim. Helps with busy backgrounds.",
+  stop_ratio: "Stop once the best line helps less than this fraction of the first line. 0 = never stop early for this reason.",
+  min_skip: "Smallest gap (in nails) a line may span. Prevents short chords hugging the rim.",
+  nail_spread_mm: "Each visit to a nail lands at a slightly different point on the rim, so line ends don't pool into ink blobs.",
+  continuous: "One unbroken line, like real thread. Off = the pen lifts and restarts where it helps most.",
+  frame: "Also draw the circle outline.",
+
+  // flow hatch
+  flow: "Stroke direction. contour = along shapes (wraps around the face), gradient = across shapes, fixed = straight classic hatching.",
+  flow_smooth_mm: "How much the direction field is smoothed. Bigger = calmer, broader curves; smaller = follows more detail.",
+  flow_bias_angle: "Direction used where the image is flat, and the angle for fixed hatching.",
+  layers: "How many crossing hatch layers. Each darker tone level adds one more direction.",
+  t1: "Darkness (0 = white, 1 = black) where the first layer starts.",
+  t2: "Darkness where the second, crossing layer starts.",
+  t3: "Darkness where the third (diagonal) layer starts.",
+  t4: "Darkness where the fourth layer starts.",
+  spacing_max_mm: "Line spacing where a layer fades in (lightest).",
+  spacing_min_mm: "Line spacing in the darkest areas. 0 = 2.5 x pen width, so dark areas don't merge into solid black.",
+  "hatch:gamma": "Midtone curve. Above 1 lightens midtones, below 1 darkens them.",
+  "hatch:clahe": "Local contrast boost. 0 = off.",
+  tone_smooth_mm: "Blur on the map that switches layers on. Softer layer edges and fewer stubs; 0 = crisp tone edges.",
+  overrun: "Lines may run past their layer's edge by a random amount, so line ends don't line up into seams.",
+  seed_margin: "Lines only start this much darker than the layer threshold. Fewer short stubs at layer edges.",
+  min_len_mm: "Drop strokes shorter than this.",
+  min_len_spacings: "Drop strokes shorter than this many line spacings (removes stubs squeezed between lines).",
+  max_len_mm: "Longest single stroke before the pen lifts.",
+  tone_model: "linear = spacing follows darkness directly. coverage = spacing chosen so the real ink of all layers matches the photo: richer tones, more ink.",
+  merge_gap_mm: "Join stroke ends closer than this that continue each other. Fewer pen lifts, same look. 0 = off.",
+  merge_angle_deg: "Largest bend allowed where two strokes are joined.",
+  outline_levels: "Draw contour lines at these darkness levels on top, e.g. 0.5 or 0.35, 0.65. Empty = no outline.",
+  outline_smooth_mm: "Smoothing of the outline contours.",
+  outline_min_len_mm: "Drop outline pieces shorter than this.",
+  shape: "circle = drawing inside a circle; rect = full square.",
+  "hatch:seed": "Changes the random placement; same seed = same drawing.",
+
+  // scribble
+  preset: "Fills all settings to reproduce one of your scripts exactly: c_v25 (even texture), app5 (high contrast, white highlights), app7 (app5 with denser hatching).",
+  max_side: "Image is shrunk to this many pixels on the long side before tracing. Sets line density on paper: keep mm per pixel at or above the pen width. 0 = full size.",
+  rotate: "auto = turn the image 90 degrees when it fills the page better.",
+  "scribble:shape": "rect = whole image. circle = centred square crop, everything clipped to the inscribed circle.",
+  "scribble:frame": "Circle shape: also draw the circle outline.",
+  white_cut: "Areas lighter than this share of the tonal range stay blank paper (app presets use 0.2).",
+  remove_noise: "Non-local-means denoise before tracing. Cleaner lines on grainy photos; slow on big images.",
+  main_lines: "Trace the contour lines that follow the image's iso-brightness lines. Off = tone layer only.",
+  gradient_threshold: "Ignore gradients weaker than this. Higher = contour lines only on stronger edges.",
+  cleanup_mode: "How much space is cleared around each traced line. adaptive (c_v25) = circles sized by tone and texture; quadrant (app5/7) = boxes sized by the darkest nearby pixel.",
+  cleanup_radius: "Maximum gap cleared around a line (px). Bigger = sparser contour lines.",
+  max_lines: "Maximum number of contour lines traced.",
+  "scribble:max_lines": "Maximum number of contour lines traced.",
+  main_max_steps: "Longest a single contour line may run, in pixels.",
+  main_momentum: "Blends each step with the previous direction. 0.5 = calmer contours without wobbles; 0.8+ starts cutting corners.",
+  smooth_main: "Moving-average smoothing of contour lines in points. 3 removes the pixel staircase. 0 = off.",
+  light_percentile: "Percentile that defines 'light' for the adaptive spacing rule.",
+  trace_kernel_size: "Radius of the area the tracer looks at to decide where to go and of the gradient blur.",
+  trace_kernel_sigma: "Blur strength for the traced gradient. Higher = smoother contour lines.",
+  hatch: "Draw a tone layer (hatching or scribble) on top of the contour lines.",
+  hatch_mode: "legacy = your original hatching. clean = evenly spaced, no U-turns or clumps. ink = clean, but only adds darkness the contour lines haven't drawn. freehand = hand-like looping scribble. squiggle = experimental maze curve.",
+  hatch_angles: "Hatch directions relative to the image's gradient, each with the darkness where it starts: angle:darkness, comma separated.",
+  hatch_sample_interval: "Distance between hatch starting points along each contour line.",
+  hatch_adaptive_spacing: "Start hatch lines more often in darker areas.",
+  "scribble:hatch_max_length": "Longest hatch stroke in pixels.",
+  hatch_source: "Which contour lines hatching starts from: all, the 1000 longest (app5), or merged lines (app7).",
+  hatch_min_line_length: "Only start hatching from contour lines longer than this.",
+  hatch_keep_min: "Drop hatch lines with fewer points than this.",
+  hatch_patch: "Look-ahead radius when hatching. 0 = same as the trace kernel; app5/7 used 5.",
+  hatch_spacing_min_px: "Spacing between hatch lines in the darkest areas.",
+  hatch_spacing_max_px: "Spacing where a hatch direction fades in.",
+  hatch_threshold_shift: "Start every hatch direction at a lighter (negative) or darker (positive) tone than its listed darkness.",
+  hatch_max_turn_deg: "A hatch line stops after turning this much in total. Prevents spirals.",
+  hatch_clean_min_len: "Drop hatch strokes shorter than this.",
+  hatch_flow_smooth_px: "Smoothing of the direction field the tone layer follows. Bigger = calmer directions.",
+  hatch_fill_px: "Flat areas with no gradient borrow their direction from structure this far away, so strokes wrap around shapes. 0 = off.",
+  hatch_view_px: "Blur at which ink and photo are compared (viewing distance). Bigger = judged from further away.",
+  hatch_ink_passes: "1 = one pass, lighter. 2 = measure the density actually reached and correct it, matching the photo's tone better.",
+  freehand_density: "Share of the missing darkness the scribble draws. 1 = full tone; lower = lighter, airier.",
+  freehand_loop_min: "Loop radius in the darkest areas. Too small makes rope-like dark bands.",
+  freehand_loop_max: "Loop radius in light areas.",
+  freehand_advance: "How fast the loop centre travels compared with the pen. Lower = denser, more overlapping loops.",
+  freehand_momentum: "Inertia of turning. Higher = longer smooth arcs; lower = twitchier path.",
+  freehand_noise: "Random turning of the path. Higher breaks up parallel bands.",
+  freehand_wobble: "Random variation of loop size, speed and shape. 0 = mechanical spring.",
+  freehand_tone_jitter: "How randomly the hand chooses which nearby dark area to head for. 0 = always the average direction (can make bands).",
+  freehand_flow_pull: "How much the scribble travels along the contours. High values make parallel bands.",
+  freehand_stroke_px: "Typical line length before the pen lifts and restarts elsewhere (random around this).",
+  freehand_walls: "Contour lines the scribble won't cross. major = silhouettes and big shape edges, all = every contour line, none = crosses freely.",
+  freehand_major_px: "Scale at which an edge counts as major. 4 = big shapes, 6 = mostly the silhouette.",
+  freehand_cross: "Chance the scribble slips through a wall anyway. 0 = never.",
+  freehand_view_px: "Width of the area each bit of line counts as darkened.",
+  freehand_budget: "Safety cap on total line length, as a multiple of what the tone needs.",
+  squiggle_gain: "Overall darkness of the maze. Above 1 darker.",
+  squiggle_min_cell: "Smallest maze cell (darkest tone). 0 = automatic, about 4 pen widths.",
+  squiggle_max_cell: "Largest maze cell (lightest drawn tone).",
+  squiggle_white: "Areas needing less darkness than this stay blank.",
+  squiggle_flow_bias: "0 = random maze; higher = corridors follow the image flow (3+ = straight rows).",
+  squiggle_angle: "Corridor direction relative to the contours.",
+  squiggle_smooth: "Rounds the maze corners.",
+  squiggle_respect_outlines: "Contour lines act as walls the maze cannot cross.",
+  squiggle_patch_px: "Split into many local mazes of about this size. 0 = one maze per area.",
+  simplify_px: "Remove points that change the line by less than this. Smaller G-code, same look.",
+  join_px: "Join line ends closer than this into one stroke. Fewer pen lifts.",
+  min_points_out: "Drop paths with fewer traced points than this.",
+  "scribble:seed": "Random seed. Same seed and settings = same drawing.",
+  min_magnitude_ratio: "Stop tracing contour lines when less than this share of the gradient is left.",
+  split_main: "Keep the forward and backward halves of each contour line as separate lines (as app5/7 did).",
+  main_order: "Order of contour lines before hatching: as traced, sorted by length (app5), or sorted and merged (app7).",
+  main_min_points: "Drop contour lines with fewer points than this.",
+  min_points: "Drop any line with fewer points than this.",
+  legacy_gradient_sum: "Reproduce a quirk of app5/7 in how the gradient is read. Only needed for exact replay.",
+  hatch_ink_aware: "Same as choosing tone layer 'ink'. Kept for old settings.",
+  sampler: "How contour start points are drawn. fast and exact give the same result; exact replays the original scripts bit for bit.",
+  separable_blur: "Faster blur for hatching. Same result within rounding.",
+  workers: "Processes used for legacy hatching. 0 = all cores.",
+
+  // plotter profile
+  pen_up: "G-code that lifts the pen.",
+  pen_down: "G-code that lowers the pen.",
+  dwell_s: "Pause after every pen up or down (G4), in seconds, so the pen settles.",
+  draw_feed: "Drawing speed (G1 feed rate).",
+  travel_feed: "Speed of pen-up moves. 0 = the machine's rapid speed.",
+  decimals: "Digits after the decimal point in coordinates.",
+  flip_y: "Flip the drawing vertically for plotters with the origin at the bottom left.",
+  offset_x: "Shift the whole drawing right (mm).",
+  offset_y: "Shift the whole drawing up (mm).",
+  pause_every_mm: "Insert an M0 pause after this much drawing, to check or swap the pen. 0 = never.",
+  pen_move_s: "How long a pen up or down takes. Only used for the plot time estimate.",
+};
 const STYLE_PARAMS = {
   stringart: [
     {k:"nails", label:"Nails", min:60, max:400, step:4, v:240},
     {k:"max_lines", label:"Max lines", min:100, max:8000, step:100, v:3000},
+    {k:"min_lines", label:"Draw at least (0 = stop when done)", min:0, max:8000, step:100, v:0},
+    {k:"stop_ratio", label:"Stop when gain falls below", min:0, max:0.2, step:0.005, v:0},
     {k:"overshoot", label:"Highlight protection", hint:"overshoot", min:0.5, max:10, step:0.5, v:3},
     {k:"pixel_mm", label:"Viewing cell", unit:"mm", min:0.4, max:3, step:0.1, v:1.2},
+    {k:"max_darkness", label:"Darkest tone aimed for", min:0.3, max:1, step:0.05, v:0.9},
     {k:"gamma", label:"Gamma", min:0.4, max:3, step:0.05, v:1.0},
+    {k:"contrast_clip", label:"Auto-contrast clip", unit:"%", min:0, max:10, step:0.5, v:1},
     {k:"clahe", label:"Local contrast", min:0, max:0.08, step:0.005, v:0},
     {k:"edge_boost", label:"Edge emphasis", min:0, max:5, step:0.25, v:1},
     {k:"vignette", label:"Fade background", min:0, max:1, step:0.05, v:0},
@@ -203,6 +357,8 @@ const STYLE_PARAMS = {
     {k:"preset", label:"Preset (fills the settings below)", type:"select", opts:["c_v25","app5","app7"], v:"c_v25", apply:true},
     {k:"max_side", label:"Max image side (0 = full)", unit:"px", min:0, max:3000, step:50, v:800},
     {k:"rotate", label:"Rotate", type:"select", opts:["auto","none","90"], v:"auto"},
+    {k:"shape", label:"Shape", type:"select", opts:["rect","circle"], v:"rect", rebuild:true, recrop:true},
+    {k:"frame", label:"Draw circle outline", type:"check", v:false, when:P => P.shape === "circle"},
     {k:"white_cut", label:"Keep light areas white", min:0, max:0.6, step:0.01, v:0},
     {k:"remove_noise", label:"Denoise first (slow)", type:"check", v:false},
 
@@ -295,14 +451,6 @@ const STYLE_PARAMS = {
     {k:"separable_blur", label:"Fast (separable) blur", type:"check", v:true},
     {k:"workers", label:"Worker processes (0 = all)", min:0, max:16, step:1, v:0},
   ],
-  radon: [
-    {k:"mode", label:"Mode", type:"select", opts:["fixed_6","6_plus_refine","pure_optimize","hierarchical"], v:"hierarchical"},
-    {k:"hierarchical_strategy", label:"Hierarchical strategy", type:"select", opts:["strength_based","cumulative_contribution"], v:"cumulative_contribution"},
-    {k:"lines", label:"Lines", min:50, max:3000, step:10, v:500},
-    {k:"edge_weight", label:"Edge weight", min:0, max:1, step:0.05, v:0.75},
-    {k:"intensity_weight", label:"Intensity weight", min:0, max:1, step:0.05, v:0.25},
-    {k:"quality_threshold", label:"Quality threshold", min:0.001, max:0.05, step:0.001, v:0.01},
-  ],
 };
 const PROFILE = [
   {k:"pen_up", label:"Pen up", type:"text", v:"G0 Z5"},
@@ -326,7 +474,7 @@ const store = {
 };
 const defaults = list => Object.fromEntries(list.filter(p => p.k).map(p => [p.k, p.v]));
 const S = {
-  style: store.get("style", "stringart"),
+  style: (s => ["stringart","hatch","scribble"].includes(s) ? s : "stringart")(store.get("style", "stringart")),
   common: {...defaults(COMMON), ...store.get("common", {})},
   params: Object.fromEntries(Object.keys(STYLE_PARAMS).map(s =>
             [s, {...defaults(STYLE_PARAMS[s]), ...store.get("params."+s, {})}])),
@@ -340,7 +488,22 @@ const S = {
 // ---------------------------------------------------------------- controls
 const $ = id => document.getElementById(id);
 
-function control(p, values, onChange){
+function helpFor(p){ return HELP[S.style + ":" + p.k] ?? HELP[p.k] ?? ""; }
+function withHelp(w, p){
+  const h = helpFor(p);
+  if(!h) return w;
+  w.title = h;
+  const lab = w.querySelector("label") || w;
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "info"; b.textContent = "?"; b.setAttribute("aria-label", "What does " + p.label + " do?");
+  const box = document.createElement("div"); box.className = "help"; box.textContent = h; box.hidden = true;
+  b.onclick = e => { e.preventDefault(); e.stopPropagation(); box.hidden = !box.hidden; };
+  (lab.tagName === "LABEL" && w.className !== "check" ? lab : w).appendChild(b);
+  const outer = document.createElement("div"); outer.className = "ctl"; outer.appendChild(w); outer.appendChild(box);
+  return outer;
+}
+function control(p, values, onChange){ return withHelp(control0(p, values, onChange), p); }
+function control0(p, values, onChange){
   const id = "p_" + Math.random().toString(36).slice(2);
   if(p.type === "check"){
     const w = document.createElement("label"); w.className = "check";
@@ -358,7 +521,10 @@ function control(p, values, onChange){
     if(p.type === "select") el.innerHTML = p.opts.map(o => `<option>${o}</option>`).join("");
     else el.type = "text";
     el.value = values[p.k];
-    el.onchange = () => { values[p.k] = el.value; if(p.apply) applyPreset(el.value); else { onChange(); if(p.rebuild) buildControls(); } };
+    el.onchange = () => { values[p.k] = el.value;
+      if(p.apply) { applyPreset(el.value); return; }
+      if(p.recrop && S.image){ cropForStyle(); setCropView(); drawCrop(); }
+      onChange(); if(p.rebuild) buildControls(); };
     w.appendChild(el);
     return w;
   }
@@ -396,7 +562,7 @@ function buildControls(){
     if(!groupVisible || (p.when && !p.when(P))) continue;
     box.appendChild(control(p, P, changed));
   }
-  $("styleTitle").textContent = {stringart:"String art", hatch:"Flow hatch", scribble:"Scribble", radon:"Classic radon"}[S.style];
+  $("styleTitle").textContent = {stringart:"String art", hatch:"Flow hatch", scribble:"Scribble"}[S.style];
   const pf = $("profileParams"); pf.innerHTML = "";
   PROFILE.forEach(p => pf.appendChild(control(p, S.profile, changedProfile)));
   $("pf_header").value = S.profile.header; $("pf_footer").value = S.profile.footer;
@@ -404,7 +570,7 @@ function buildControls(){
 }
 // scribble presets come from the server (plotter/scribble.py PRESETS) so they never drift
 let _presets = null;
-const KEEP_ON_PRESET = ["preset","max_side","rotate","workers","seed","simplify_px","join_px",
+const KEEP_ON_PRESET = ["preset","max_side","rotate","shape","frame","workers","seed","simplify_px","join_px",
   "hatch_mode","main_lines","freehand_density","freehand_loop_min","freehand_loop_max","freehand_advance",
   "freehand_momentum","freehand_noise","freehand_tone_jitter","freehand_wobble","freehand_flow_pull","freehand_stroke_px","freehand_walls","freehand_major_px","hatch_view_px","hatch_ink_passes","hatch_spacing_min_px","hatch_spacing_max_px","hatch_fill_px","hatch_max_turn_deg","main_momentum","smooth_main"];
 async function applyPreset(name){
@@ -500,7 +666,7 @@ function drawCrop(){
   cx.fillStyle = "#fff"; cx.fillRect(x+w-7, y+h-7, 10, 10);
 }
 // square crop for circle styles, free rectangle for scribble
-function freeCrop(){ return S.style === "scribble"; }
+function freeCrop(){ return S.style === "scribble" && S.params.scribble.shape !== "circle"; }
 function clampCrop(){
   const iw = S.image.width, ih = S.image.height;
   let [x,y,w,h] = S.crop;
