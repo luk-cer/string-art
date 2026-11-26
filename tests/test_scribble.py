@@ -149,3 +149,18 @@ def test_stringart_min_lines_forces_more_lines():
     forced, _, _ = sa.solve(target, np.ones_like(target), cfg)
     n = lambda st: sum(len(s) - 1 for s in st)
     assert n(free) < 200 <= n(forced)
+
+
+def test_stringart_arcs_stay_inside_and_dashes_taper():
+    import math
+    import numpy as np
+    from plotter import stringart as sa
+    for d in (0.3, 1.0, 2.5):
+        p, q = (math.cos(-d / 2), math.sin(-d / 2)), (math.cos(d / 2), math.sin(d / 2))
+        for b in (1.0, 0.5, -1.0):
+            pts = sa.arc_points(p, q, (0, 0), 1.0, b, 0.01)
+            assert np.hypot(*pts.T).max() <= 1.0 + 1e-9
+    cfg = sa.StringArtConfig(dashed=True, gap_tone=0.2, taper=0.4)
+    t = np.tile(np.linspace(0, 1, 50), (50, 1))
+    duty = sa.drawable_mask(t, cfg)[25]
+    assert duty[0] == 0 and duty[-1] == 1 and np.all(np.diff(duty) >= -1e-6)   # fades in monotonically

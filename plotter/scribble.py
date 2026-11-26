@@ -79,6 +79,8 @@ class ScribbleConfig:
     hatch_clean_min_len: float = 6.0    # clean: drop hatch strokes shorter than this (px)
     hatch_threshold_shift: float = -0.1 # clean: start each hatch layer this much earlier (darker areas)
     hatch_ink_aware: bool = False       # same as hatch_mode="ink" (kept for scripts)
+    hatch_walls: str = "none"           # legacy/clean/ink: contours hatching stops at: none | major | all
+    hatch_major_px: float = 4.0         # scale (px) at which an edge counts as major
     hatch_view_px: float = 2.0          # ink-aware: blur (px) at which ink and target are compared ("viewing distance")
     hatch_ink_passes: int = 2           # ink-aware: 2 = hatch, measure achieved coverage, correct the request, redo
     hatch_fill_px: float = 30.0         # clean: flat areas borrow hatch direction from this larger scale (0 = off)
@@ -248,8 +250,9 @@ def _sign(v):
 class _Tracer:
     """Gradient-following line tracer (c_v25 `_trace_line`, same arithmetic)."""
 
-    def __init__(self, ipix, d):
+    def __init__(self, ipix, d, walls=None):
         self.ipix = ipix
+        self.walls = walls
         self.H, self.W = ipix.shape
         self.d = d
         self.U0, self.U1 = _direction_grid(d)
@@ -279,6 +282,8 @@ class _Tracer:
         unique = True
         step = 0
         pdx = pdy = None                         # previous unit direction (momentum only)
+        walls = self.walls
+        off_wall = walls is None or not walls[int(px), int(py)]   # may start on a wall, then must leave it
         while -1 < px < H - 1 and -1 < py < W - 1 and unique and step < max_steps:
             cx, cy = int(px), int(py)
             a, b = gx[cx, cy], gy[cx, cy]
@@ -316,6 +321,12 @@ class _Tracer:
             if px < 0 or py < 0:
                 return line
             p = (int(px), int(py))
+            if walls is not None and p[0] < H and p[1] < W:
+                if walls[p]:
+                    if off_wall:
+                        return line                  # don't hatch across an outline
+                else:
+                    off_wall = True
             if p in seen:
                 unique = False
             else:
@@ -656,7 +667,8 @@ class Scribble:
         gxs = gaussian_blur(self.edges_x, 10 * 2 * d + 1, 6, c.separable_blur)
         gys = gaussian_blur(self.edges_y, 10 * 2 * d + 1, 6, c.separable_blur)
         gk = gaussian_kernel_2d(10 * 2 * d + 1, 6) if c.legacy_gradient_sum else None
-        extra = (c.hatch_keep_min, gk)
+        walls = self._hatch_walls()
+        extra = (c.hatch_keep_min, gk, walls)
         dp = c.hatch_patch or d
         seeds = self.hatch_seeds()
         workers = c.workers or os.cpu_count() or 1
@@ -723,6 +735,17 @@ class Scribble:
         if progress:
             progress(f"  squiggle: {st['loops']} closed loops over {st['cells']} cells")
         return self
+
+    def _hatch_walls(self):
+        """Wall mask for legacy/clean/ink hatching (None when off)."""
+        c = self.cfg
+        if not c.hatch_walls or c.hatch_walls == "none" or not self.n_main:
+            return None
+        main_ink = getattr(self, "main_ink", None)
+        if main_ink is None:
+            pen_px = c.pen_mm / paper_fit(*self.pix.shape, c)[0]
+            main_ink = ink_coverage(self.lines[:self.n_main], self.pix.shape, pen_px)
+        return self._walls(c.hatch_walls, main_ink, c.hatch_major_px)
 
     def _walls(self, mode, main_ink, major_px):
         """Contours the tone layer must not cross. 'all': every drawn contour line;
@@ -793,6 +816,9 @@ class Scribble:
             hc.pen_mm = pen_px                   # cell units = px
             hc.tone_smooth_mm = 0.0              # already at viewing scale
         mask = np.ones(darkness.shape, dtype=bool)
+        walls = self._hatch_walls()
+        if walls is not None:
+            mask &= ~walls                        # hatch lines stop at outlines
         base = direction_field(self.pix, hc, 1.0)
         seeds = [(float(x), float(y)) for x, y in self.hatch_seeds()]
 
@@ -924,8 +950,8 @@ def _smooth_line(line, window):
 
 
 def _hatch_chunk(args):
-    ipix, d, gxs, gys, seeds, angles, max_len, keep_min, gk = args
-    tr = _Tracer(ipix, d)
+    ipix, d, gxs, gys, seeds, angles, max_len, keep_min, gk, walls = args
+    tr = _Tracer(ipix, d, walls)
     out = []
     for px, py in seeds:
         res = []

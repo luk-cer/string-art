@@ -40,7 +40,16 @@ def cmd_stringart(args):
         max_darkness=args.max_darkness, gamma=args.gamma, edge_boost=args.edge_boost,
         stop_ratio=args.stop_ratio, continuous=args.continuous, overshoot=args.overshoot, clahe=args.clahe, vignette=args.vignette, nail_spread_mm=args.nail_spread, frame=args.frame,
         crop=tuple(args.crop) if args.crop else None,
+        min_lines=args.min_lines, chords=args.chords, dashed=args.dashed, gap_tone=args.gap_tone,
+        taper=args.taper, dash_period_mm=args.dash_period,
     )
+    if args.auto:
+        from dataclasses import replace
+        from .tune import suggest_stringart
+        print("Optimising settings (compares the simulated plot with the photo)...")
+        best, score, _ = suggest_stringart(args.image, cfg, progress=print)
+        cfg = replace(cfg, **best)
+        print(f"Suggested: {best}  (score {score:.3f})")
     pw, ph, _, R = sa.layout(cfg)
     print(f"Circle {2*R:.0f} mm on {cfg.paper}, {cfg.nails} nails, pen {cfg.pen_mm} mm")
     t0 = time.time()
@@ -208,6 +217,14 @@ def main(argv=None):
     s.add_argument("--continuous", action="store_true",
                    help="one unbroken path (thread-like); default lifts the pen when stuck")
     s.add_argument("--frame", action="store_true", help="also draw the circle outline")
+    s.add_argument("--min-lines", type=int, default=0, help="keep drawing until this many lines")
+    s.add_argument("--chords", default="straight", choices=["straight", "poincare", "warp"],
+                   help="line shape: straight, Poincare arcs, or warp (solver picks a bend per line)")
+    s.add_argument("--dashed", action="store_true", help="lift the pen where the photo is lighter than --gap-tone")
+    s.add_argument("--gap-tone", type=float, default=0.15, help="dashed: blank below this darkness")
+    s.add_argument("--taper", type=float, default=0.3, help="dashed: darkness range over which dashes fade in")
+    s.add_argument("--dash-period", type=float, default=5.0, help="dashed: dash + gap length in mm")
+    s.add_argument("--auto", action="store_true", help="optimise the tone settings for this photo first (~1-4 min)")
     s.add_argument("--crop", type=int, nargs=4, metavar=("X", "Y", "W", "H"))
     _add_gcode_args(s)
     s.set_defaults(fn=cmd_stringart)

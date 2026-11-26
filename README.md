@@ -235,5 +235,18 @@ or above the pen width or dark areas fill in solid. Other knobs mirror
 `SketchConverter`: `--gradient-threshold`, `--cleanup-radius`, `--max-lines`,
 `--hatch-angles 210:0.5,150:0.7,...`, `--no-hatch`, `--denoise`.
 
+### String art: curves, tapered dashes, suggested settings
+
+- `--chords warp` lets the solver bend each line (straight, Poincare arc bowing to the centre, or towards
+  the rim); `poincare` uses hyperbolic arcs only.
+- `--dashed` makes lines fade out in light areas: solid where dark, shorter and sparser dashes as it
+  lightens (`--taper`, `--dash-period`), blank below `--gap-tone`. Best likeness by far, but many pen lifts.
+- `--auto` (UI: "Suggest settings") tries tone-setting combinations and keeps the one whose simulated plot
+  looks most like the photo.
+- Physics matters most: a 0.1 mm pen gets ~3x the lines of a 0.3 mm pen on the same circle.
+
+Measured on the test portrait (A4, 0.1 mm pen): straight 0.72, warp 0.73, warp + tapered dashes 0.835
+likeness score (1 = identical).
+
 See `TODO.md` for the review of the existing code and the roadmap
 (better crosshatching, preview UI, string-art quality).

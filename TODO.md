@@ -214,3 +214,13 @@ Done (all options, defaults keep the original look):
       (it stops when no line improves the picture - light photos, high highlight protection)
 - [x] Scribble: circle mask (`shape="circle"`, optional frame); lines clipped exactly at the rim
 - [x] Classic radon removed from the UI styles (code kept for main.py / lines2gcode)
+
+## 9. String art likeness
+
+- [x] `tune.suggest_stringart` / `--auto` / UI button: coordinate search scored by SSIM - 0.5*MAE of the
+      simulated plot vs a fixed reference at viewing blur (0.47 -> 0.60 at 0.3 mm pen)
+- [x] Curved chords: `chords=poincare|warp` (arcs stay inside the circle; Poincare meet the rim at 90 deg)
+- [x] Dashed lines with taper: dash duty follows tone (0.73 -> 0.835); cost: ~14k pen lifts at 5 mm period
+- [x] `hatch_walls` for legacy / clean / ink hatching (stop at major / all contours)
+- [ ] Poincare-only chords make a dense fringe of short arcs at the rim (solver likes them); limit min span
+- [ ] Dashed: join dashes of neighbouring lines into continuous "dotted" strokes to cut pen lifts

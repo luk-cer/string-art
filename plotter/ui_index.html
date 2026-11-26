@@ -171,6 +171,16 @@ const HELP = {
   // string art
   nails: "Points around the circle that lines run between. More nails = finer angles and detail, slower to compute.",
   max_lines: "Upper limit on the number of lines. The solver usually stops earlier, when no line improves the picture.",
+  _suggest: "Tries combinations of the tone settings below, solves each, and keeps the one whose simulated plot looks most like the photo (structure and tone at viewing distance). Takes 1-3 minutes; then renders.",
+  chords: "straight = classic chords. poincare = hyperbolic arcs that meet the rim at right angles and bow towards the centre. warp = the solver picks straight or a bend for each line (best likeness, about 5x slower).",
+  dashed: "Lines fade out where the photo is light: solid in dark areas, then ever shorter and sparser dashes, then nothing. Much better likeness, but every dash is a pen lift (many more lifts, longer plots).",
+  gap_tone: "Dashed lines: below this darkness the line is blank.",
+  taper: "Dashed lines: darkness range over which dashes grow from nothing to a solid line. 0 = hard cut (looks like a stencil); 0.3 = gentle fade.",
+  dash_period_mm: "Dashed lines: length of one dash plus its gap. The dash's share follows the tone. Longer = fewer pen lifts, coarser texture.",
+  dash_min_mm: "Dashed lines: drop dashes shorter than this (avoids pen stutter).",
+  gap_min_mm: "Dashed lines: don't lift the pen for gaps shorter than this."
+  hatch_walls: "Hatch lines stop at contour lines: major = silhouettes and big shape edges, all = every contour line, none = hatch across.",
+  hatch_major_px: "Scale at which an edge counts as major. 4 = big shapes, 6 = mostly the silhouette.",
   min_lines: "Keep drawing the best available line until this many, even after the tone target is reached. Use when it stops too early; the result gets darker than the photo.",
   overshoot: "How strongly ink on areas lighter than the photo is penalised. Higher = cleaner highlights but fewer lines; lower = denser, darker.",
   pixel_mm: "Size of the area the eye blends together (viewing distance). Larger = smoother tones and more lines before an area counts as done.",
@@ -307,6 +317,7 @@ const HELP = {
 };
 const STYLE_PARAMS = {
   stringart: [
+    {k:"_suggest", label:"Suggest settings for this photo", type:"button", action:"suggest"},
     {k:"nails", label:"Nails", min:60, max:400, step:4, v:240},
     {k:"max_lines", label:"Max lines", min:100, max:8000, step:100, v:3000},
     {k:"min_lines", label:"Draw at least (0 = stop when done)", min:0, max:8000, step:100, v:0},
@@ -321,6 +332,13 @@ const STYLE_PARAMS = {
     {k:"vignette", label:"Fade background", min:0, max:1, step:0.05, v:0},
     {k:"min_skip", label:"Min nail skip", min:1, max:60, step:1, v:15},
     {k:"nail_spread_mm", label:"Nail spread", unit:"mm", min:0, max:5, step:0.25, v:1.5},
+    {k:"chords", label:"Line shape", type:"select", opts:["straight","poincare","warp"], v:"straight"},
+    {k:"dashed", label:"Dashed: lift the pen in light areas", type:"check", v:false},
+    {k:"gap_tone", label:"Dashed: blank below darkness", min:0, max:0.6, step:0.01, v:0.15},
+    {k:"taper", label:"Dashed: taper range", min:0, max:0.8, step:0.05, v:0.3},
+    {k:"dash_period_mm", label:"Dashed: dash + gap length", unit:"mm", min:1, max:15, step:0.5, v:5},
+    {k:"dash_min_mm", label:"Dashed: shortest dash", unit:"mm", min:0, max:5, step:0.1, v:0.5},
+    {k:"gap_min_mm", label:"Dashed: shortest gap", unit:"mm", min:0, max:5, step:0.1, v:0.4},
     {k:"continuous", label:"One continuous line (thread-like)", type:"check", v:false},
     {k:"frame", label:"Draw circle frame", type:"check", v:false},
   ],
@@ -378,6 +396,10 @@ const STYLE_PARAMS = {
     {group:"Tone layer"},
     {k:"hatch", label:"Draw a tone layer", type:"check", v:true, rebuild:true},
     {k:"hatch_mode", label:"Kind", type:"select", opts:["legacy","clean","ink","freehand","squiggle"], v:"legacy", rebuild:true},
+    {k:"hatch_walls", label:"Stop hatching at contours", type:"select", opts:["none","major","all"], v:"none",
+     rebuild:true, when:P => P.hatch && ["legacy","clean","ink"].includes(P.hatch_mode)},
+    {k:"hatch_major_px", label:"'Major' scale (6 = silhouette)", unit:"px", min:1, max:12, step:0.5, v:4,
+     when:P => P.hatch && ["legacy","clean","ink"].includes(P.hatch_mode) && P.hatch_walls === "major"},
     {k:"hatch_angles", label:"Hatch angle:darkness pairs", type:"text", v:"210:0.5,150:0.7,240:0.85,120:0.95",
      when:P => P.hatch && ["legacy","clean","ink"].includes(P.hatch_mode)},
 
@@ -505,6 +527,12 @@ function withHelp(w, p){
 function control(p, values, onChange){ return withHelp(control0(p, values, onChange), p); }
 function control0(p, values, onChange){
   const id = "p_" + Math.random().toString(36).slice(2);
+  if(p.type === "button"){
+    const w = document.createElement("div"); w.className = "row wide";
+    w.innerHTML = `<button class="btn ghost" type="button" id="${id}">${p.label}</button>`;
+    w.querySelector("button").onclick = () => ACTIONS[p.action]();
+    return w;
+  }
   if(p.type === "check"){
     const w = document.createElement("label"); w.className = "check";
     w.innerHTML = `<input type="checkbox" id="${id}"> ${p.label}`;
@@ -705,6 +733,25 @@ cc.onwheel = e => {
 };
 $("cropReset").onclick = e => { e.preventDefault(); if(S.image){ cropForStyle(); setCropView(); drawCrop(); changed(); } };
 window.addEventListener("resize", () => { if(S.image) drawCrop(); draw(); });
+
+// ---------------------------------------------------------------- suggest (string art)
+const ACTIONS = {
+  async suggest(){
+    if(!S.image){ $("stats").innerHTML = `<span class="err">Upload a photo first.</span>`; return; }
+    $("busy").style.display = "flex"; $("busyText").textContent = "Optimising settings (1-3 min)…";
+    try{
+      const r = await fetch("/api/suggest", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({image:S.image.id, crop:S.crop, params:{...S.common, ...S.params.stringart}})});
+      const j = await r.json(); if(!r.ok) throw new Error(j.error);
+      Object.assign(S.params.stringart, j.params); persist(); buildControls();
+      const steps = j.history.slice(1).map(h => h.step).join(", ") || "current settings were already best";
+      $("busy").style.display = "none";
+      await render();
+      $("stats").insertAdjacentHTML("afterbegin", `<span>suggested: <b>${steps}</b> (score ${j.score})</span>`);
+    }catch(e){ $("stats").innerHTML = `<span class="err">Suggest failed: ${e.message}</span>`; }
+    finally{ $("busy").style.display = "none"; $("busyText").textContent = "Rendering…"; }
+  },
+};
 
 // ---------------------------------------------------------------- render
 let renderSeq = 0;

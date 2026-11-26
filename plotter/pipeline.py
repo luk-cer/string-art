@@ -66,9 +66,9 @@ def build_stringart(image_path, cfg: sa.StringArtConfig, progress=None):
     pw, ph, _, R = sa.layout(cfg)
     size = int(round(2 * R / cfg.pixel_mm))
     target, weight, _, box = sa.prepare_target(image_path, cfg, size)
-    table = sa.LineTable(cfg.nails, size, cfg.pixel_mm, cfg.pen_mm)
+    table = sa.LineTable(cfg.nails, size, cfg.pixel_mm, cfg.pen_mm, sa.chord_bends(cfg))
     strokes, cov, _ = sa.solve(target, weight, cfg, table, progress=progress)
-    polylines = sa.strokes_to_polylines(strokes, cfg)
+    polylines = sa.strokes_to_polylines(strokes, cfg, target)
     if cfg.frame:
         polylines.append(sa.circle_polyline(cfg))
     n_lines = sum(len(s) - 1 for s in strokes)

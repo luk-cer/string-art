@@ -129,6 +129,18 @@ class App:
             "files": {ext: f"/api/file/{job}/plot.{ext}" for ext in ("gcode", "svg", "json")},
         }
 
+    def suggest(self, req):
+        """Optimise string-art tone settings for the uploaded photo."""
+        from .tune import suggest_stringart
+        params = dict(req.get("params") or {})
+        if req.get("crop"):
+            params["crop"] = req["crop"]
+        cfg = pipeline.config_from_dict(sa.StringArtConfig, params)
+        img = self.image_path(req["image"])
+        with self.lock:
+            best, score, history = suggest_stringart(str(img), cfg, time_limit=float(req.get("seconds", 150)))
+        return {"params": best, "score": round(score, 4), "history": history}
+
     def job_file(self, job, name):
         if not ID_RE.match(job) or not FILE_RE.match(name):
             raise ValueError("bad path")
@@ -200,6 +212,8 @@ def make_handler(app):
                     self._send(200, app.upload(body))
                 elif self.path == "/api/render":
                     self._send(200, app.render(json.loads(body)))
+                elif self.path == "/api/suggest":
+                    self._send(200, app.suggest(json.loads(body)))
                 else:
                     self._send(404, {"error": "not found"})
             except Exception as e:  # noqa: BLE001
