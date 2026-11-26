@@ -151,14 +151,8 @@ def build_scribble(image_path, cfg, progress=None):
     lines, (H, W), sc = scr.scribble(image_path, cfg, progress=progress)
     lines = [l for l in lines if len(l) >= cfg.min_points_out]
 
-    pw, ph = PAPER_SIZES[cfg.paper]
-    if cfg.portrait:
-        pw, ph = min(pw, ph), max(pw, ph)
-    aw, ah = pw - 2 * cfg.padding_mm, ph - 2 * cfg.padding_mm
-    fit = lambda w, h: min(aw / w, ah / h)
-    rot = cfg.rotate == "90" or (cfg.rotate == "auto" and fit(H, W) > fit(W, H) * 1.05)
+    s, rot, pw, ph = scr.paper_fit(H, W, cfg)
     cw, ch = (H, W) if rot else (W, H)            # content size in pixels after rotation
-    s = fit(cw, ch)
     ox = (pw - cw * s) / 2
     oy = (ph - ch * s) / 2
 

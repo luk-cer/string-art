@@ -186,5 +186,6 @@ Done (all options, defaults keep the original look):
       instead of running in fixed parallel rows)
 - [x] `main_momentum` (0.5 recommended): no U-turns/spirals in main lines, calmer contours; 0.8 starts
       cutting corners. `smooth_main` (3) removes the pixel staircase.
-- [ ] Coverage-based tone for clean hatching that accounts for main-line ink already present
+- [x] `hatch_mode="ink"`: hatch target = 1 - (1 - target)/(1 - main-line ink) at viewing scale, spacing from
+      real pen coverage, second pass calibrates achieved vs requested density
 - [ ] Taper/stagger hatch ends at tone boundaries (as in flow hatch overrun)

@@ -275,8 +275,9 @@ def main(argv=None):
     c.add_argument("--denoise", action="store_true", help="non-local-means denoise first (slow)")
     c.add_argument("--no-hatch", action="store_true")
     c.add_argument("--hatch-source", choices=["all", "longest", "merged"])
-    c.add_argument("--hatch-mode", choices=["legacy", "clean"],
-                   help="clean: no U-turns/spirals/clumps, evenly spaced, fills flat dark areas")
+    c.add_argument("--hatch-mode", choices=["legacy", "clean", "ink"],
+                   help="legacy: original; clean: no U-turns/spirals/clumps, evenly spaced, fills flat dark "
+                        "areas; ink: clean, but only adds the darkness the main lines haven't drawn")
     c.add_argument("--hatch-spacing", type=float, nargs=2, metavar=("DARK", "LIGHT"),
                    help="clean: hatch spacing in px (default 1.5 4)")
     c.add_argument("--hatch-fill", type=float, help="clean: px scale flat areas borrow direction from (0 = off)")

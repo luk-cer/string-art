@@ -68,12 +68,16 @@ class ScribbleConfig:
     hatch_patch: int | None = None      # look-ahead patch radius for hatching (None = trace_kernel_size; app5/7: 5)
     # visual improvements (off by default = original look)
     hatch_mode: str = "legacy"          # legacy (original tracer) | clean (orientation field, spacing, no spirals)
+                                        # | ink (clean + only adds the darkness main lines haven't drawn)
     hatch_spacing_min_px: float = 1.5   # clean: hatch line spacing in the darkest areas
     hatch_spacing_max_px: float = 4.0   # clean: spacing where a hatch layer fades in
     hatch_flow_smooth_px: float = 6.0   # clean: smoothing of the hatch direction field (orig. sigma 6)
     hatch_max_turn_deg: float = 90.0    # clean: stop a hatch line after turning this much in total
     hatch_clean_min_len: float = 6.0    # clean: drop hatch strokes shorter than this (px)
     hatch_threshold_shift: float = -0.1 # clean: start each hatch layer this much earlier (darker areas)
+    hatch_ink_aware: bool = False       # same as hatch_mode="ink" (kept for scripts)
+    hatch_view_px: float = 2.0          # ink-aware: blur (px) at which ink and target are compared ("viewing distance")
+    hatch_ink_passes: int = 2           # ink-aware: 2 = hatch, measure achieved coverage, correct the request, redo
     hatch_fill_px: float = 30.0         # clean: flat areas borrow hatch direction from this larger scale (0 = off)
     smooth_main: int = 0                # moving-average window for main lines (0 = off): softens staircase
     main_momentum: float = 0.0          # 0..0.95: blend each step with the previous direction (and never
@@ -335,6 +339,38 @@ class _BlockSampler:
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
+
+def paper_fit(H, W, cfg):
+    """Page layout for an H x W image: (mm_per_px, rotated, paper_w, paper_h)."""
+    from radon_renderer.config import PAPER_SIZES
+    pw, ph = PAPER_SIZES[cfg.paper]
+    if cfg.portrait:
+        pw, ph = min(pw, ph), max(pw, ph)
+    aw, ah = pw - 2 * cfg.padding_mm, ph - 2 * cfg.padding_mm
+    fit = lambda w, h: min(aw / w, ah / h)
+    rot = cfg.rotate == "90" or (cfg.rotate == "auto" and fit(H, W) > fit(W, H) * 1.05)
+    cw, ch = (H, W) if rot else (W, H)
+    return fit(cw, ch), rot, pw, ph
+
+
+def ink_coverage(lines, shape, pen_px, supersample=4):
+    """Fraction of each pixel covered by ink when `lines` ((row, col) points)
+    are drawn with a pen `pen_px` pixels wide (opaque ink, overlaps count once)."""
+    from PIL import ImageDraw
+    H, W = shape
+    k = supersample
+    im = Image.new("L", (W * k, H * k), 0)
+    d = ImageDraw.Draw(im)
+    width = max(1, int(round(pen_px * k)))
+    for l in lines:
+        if len(l) > 1:
+            d.line([((p[1] + 0.5) * k, (p[0] + 0.5) * k) for p in l], fill=255, width=width)
+        elif l:
+            r = width / 2
+            x, y = (l[0][1] + 0.5) * k, (l[0][0] + 0.5) * k
+            d.ellipse((x - r, y - r, x + r, y + r), fill=255)
+    a = np.asarray(im, dtype=float).reshape(H, k, W, k).mean(axis=(1, 3)) / 255.0
+    return a
 
 def load_gray(image_path, cfg):
     img = ImageOps.exif_transpose(Image.open(image_path))
@@ -616,16 +652,54 @@ class Scribble:
                          min_len_spacings=2.0, tone_smooth_mm=1.0, seed_margin=0.03, overrun=0.05,
                          layer_thresholds=tuple(max(0.0, t + c.hatch_threshold_shift) for _, t in angles))
         darkness = self.ipix
+        if c.hatch_ink_aware or c.hatch_mode == "ink":
+            # what the main lines already draw, at the real pen width on paper
+            from scipy.ndimage import gaussian_filter
+            mm_per_px = paper_fit(*self.pix.shape, c)[0]
+            pen_px = c.pen_mm / mm_per_px
+            main_ink = ink_coverage(self.lines, self.pix.shape, pen_px)
+            v = c.hatch_view_px
+            T = np.clip(gaussian_filter(self.ipix, v), 0, 0.97)
+            M = np.clip(gaussian_filter(main_ink, v), 0, 0.97)
+            # ink combines like 1 - (1 - main)(1 - hatch) = target  ->  hatch = 1 - (1 - T)/(1 - M)
+            darkness = np.clip(1 - (1 - T) / (1 - M), 0, 1)
+            hc.tone_model = "coverage"           # spacing from real pen coverage of the remaining tone
+            hc.pen_mm = pen_px                   # cell units = px
+            hc.tone_smooth_mm = 0.0              # already at viewing scale
+            self.main_ink, self.hatch_target = main_ink, darkness
+            if progress:
+                progress(f"  ink-aware: pen {pen_px:.2f} px, main lines cover {main_ink.mean()*100:.0f}% of the page, "
+                         f"hatching asked for {darkness.mean()*100:.0f}% more")
         mask = np.ones(darkness.shape, dtype=bool)
         base = direction_field(self.pix, hc, 1.0)
-        shared = _Shared(darkness, mask, hc, 1.0)
-        rng = np.random.default_rng(0 if c.seed is None else c.seed)
         seeds = [(float(x), float(y)) for x, y in self.hatch_seeds()]
-        new = []
-        for (angle, _), thr in zip(angles, hc.layer_thresholds):
-            theta = base + math.radians(angle)
-            new += hatch_layer(darkness, mask, theta, thr, hc, 1.0, rng, shared,
-                               seed_points=seeds, max_total_turn_deg=c.hatch_max_turn_deg)
+
+        def hatch_pass(dk):
+            shared = _Shared(dk, mask, hc, 1.0)
+            rng = np.random.default_rng(0 if c.seed is None else c.seed)
+            out = []
+            for (angle, _), thr in zip(angles, hc.layer_thresholds):
+                theta = base + math.radians(angle)
+                out += hatch_layer(dk, mask, theta, thr, hc, 1.0, rng, shared,
+                                   seed_points=seeds, max_total_turn_deg=c.hatch_max_turn_deg)
+            return out
+
+        new = hatch_pass(darkness)
+        if (c.hatch_ink_aware or c.hatch_mode == "ink") and c.hatch_ink_passes > 1:
+            # Streamline hatching never reaches its nominal density (lines stop short of
+            # each other, short strokes are dropped), so measure what was achieved and
+            # ask for proportionally more where it fell short: per pixel, raise the
+            # requested coverage r to 1 - (1 - r)^g with g = log(1-r)/log(1-achieved).
+            from scipy.ndimage import gaussian_filter
+            for _ in range(c.hatch_ink_passes - 1):
+                got = np.clip(gaussian_filter(ink_coverage(new, self.pix.shape, hc.pen_mm), c.hatch_view_px), 0, 0.97)
+                want = np.clip(self.hatch_target, 0, 0.97)
+                g = np.log1p(-want) / np.minimum(np.log1p(-got), -1e-3)
+                g = np.clip(gaussian_filter(np.where(want > 0.02, g, 1.0), 4 * c.hatch_view_px), 1.0, 3.0)
+                darkness = np.clip(1 - (1 - want) ** g, 0, 0.97)
+                new = hatch_pass(darkness)
+            if progress:
+                progress(f"  ink-aware: corrected request (gain {g.mean():.2f} avg)")
         self.lines.extend(new)
         if progress:
             progress(f"  clean hatch lines: {len(new)}")
@@ -638,7 +712,7 @@ class Scribble:
         self.trace_main_lines(progress)
         self.n_main = len(self.lines)
         if self.cfg.hatch:
-            if self.cfg.hatch_mode == "clean":
+            if self.cfg.hatch_mode in ("clean", "ink"):
                 self.add_clean_hatching(progress)
             else:
                 self.add_crosshatching(progress)

@@ -67,3 +67,23 @@ def test_clean_hatching_and_momentum(tmp_path):
             if len(a) > 1:
                 dots = (a[1:] * a[:-1]).sum(1)
                 assert (dots > 0).all()
+
+
+def test_ink_mode_hatches_less_where_main_lines_already_draw(tmp_path):
+    import numpy as np
+    from plotter.scribble import preset, Scribble, load_gray
+    p = _img(tmp_path)
+    res = {}
+    for mode in ("clean", "ink"):
+        cfg = preset("app5", max_lines=300, workers=1, hatch_mode=mode)
+        sc = Scribble(load_gray(p, cfg), cfg)
+        sc.run()
+        res[mode] = sc
+    ink = res["ink"]
+    assert ink.hatch_target.max() <= 1 and ink.hatch_target.min() >= 0
+    # main lines are identical; only the hatching differs
+    assert res["clean"].lines[:res["clean"].n_main] == ink.lines[:ink.n_main]
+    # the hatch target is reduced where main-line ink already is
+    busy = ink.main_ink > 0.3
+    if busy.any():
+        assert ink.hatch_target[busy].mean() < ink.ipix[busy].mean()
