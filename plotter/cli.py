@@ -108,7 +108,7 @@ def cmd_scribble(args):
          "sigma": "trace_kernel_sigma", "hatch_interval": "hatch_sample_interval",
          "simplify": "simplify_px", "join": "join_px", "white_cut": "white_cut",
          "hatch_mode": "hatch_mode", "momentum": "main_momentum", "smooth": "smooth_main",
-         "hatch_fill": "hatch_fill_px",
+         "hatch_fill": "hatch_fill_px", "ink_passes": "hatch_ink_passes",
          "cleanup_mode": "cleanup_mode", "hatch_source": "hatch_source"}
     keys = ["paper", "rotate", "max_side", "gradient_threshold", "cleanup_radius", "max_lines",
             "light_percentile", "hatch_max_length", "sampler", "workers", "seed"] + list(m)
@@ -278,6 +278,7 @@ def main(argv=None):
     c.add_argument("--hatch-mode", choices=["legacy", "clean", "ink"],
                    help="legacy: original; clean: no U-turns/spirals/clumps, evenly spaced, fills flat dark "
                         "areas; ink: clean, but only adds the darkness the main lines haven't drawn")
+    c.add_argument("--ink-passes", type=int, help="ink mode: 1 = lighter, 2 = calibrated to the photo's tone (default)")
     c.add_argument("--hatch-spacing", type=float, nargs=2, metavar=("DARK", "LIGHT"),
                    help="clean: hatch spacing in px (default 1.5 4)")
     c.add_argument("--hatch-fill", type=float, help="clean: px scale flat areas borrow direction from (0 = off)")

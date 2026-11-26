@@ -212,6 +212,7 @@ const STYLE_PARAMS = {
     {k:"hatch_max_length", label:"Hatch max length", unit:"px", min:10, max:400, step:10, v:150},
     {k:"hatch_mode", label:"Hatching (legacy / clean / ink-aware)", type:"select", opts:["legacy","clean","ink"], v:"legacy"},
     {k:"hatch_view_px", label:"Ink-aware: viewing blur", unit:"px", min:0.5, max:6, step:0.5, v:2},
+    {k:"hatch_ink_passes", label:"Ink-aware: passes (1 lighter, 2 calibrated)", min:1, max:3, step:1, v:2},
     {k:"hatch_spacing_min_px", label:"Clean hatch spacing (dark)", unit:"px", min:0.8, max:6, step:0.1, v:1.5},
     {k:"hatch_spacing_max_px", label:"Clean hatch spacing (light)", unit:"px", min:1.5, max:12, step:0.5, v:4},
     {k:"hatch_fill_px", label:"Clean: flat areas follow shapes at", unit:"px", min:0, max:120, step:5, v:30},
@@ -330,7 +331,7 @@ function buildControls(){
 // scribble presets come from the server (plotter/scribble.py PRESETS) so they never drift
 let _presets = null;
 const KEEP_ON_PRESET = ["preset","max_side","rotate","workers","seed","simplify_px","join_px",
-  "hatch_mode","hatch_view_px","hatch_spacing_min_px","hatch_spacing_max_px","hatch_fill_px","hatch_max_turn_deg","main_momentum","smooth_main"];
+  "hatch_mode","hatch_view_px","hatch_ink_passes","hatch_spacing_min_px","hatch_spacing_max_px","hatch_fill_px","hatch_max_turn_deg","main_momentum","smooth_main"];
 async function applyPreset(name){
   try{
     if(!_presets) _presets = await (await fetch("/api/presets/scribble")).json();
