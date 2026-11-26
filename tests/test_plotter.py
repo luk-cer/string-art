@@ -31,3 +31,16 @@ def test_ink_saturates_and_stops():
     n = sum(len(s) - 1 for s in strokes)
     assert 0 < n < 5000                          # stopped on its own
     assert cov.max() < 0.95                      # no solid black blob
+
+
+def test_flow_hatch_smoke(tmp_path):
+    from PIL import Image
+    from plotter import hatch as hz
+    yy, xx = np.mgrid[:120, :120]
+    img = (255 * np.clip(np.hypot(xx - 60, yy - 60) / 60, 0, 1)).astype(np.uint8)
+    p = tmp_path / "g.png"
+    Image.fromarray(img).save(p)
+    cfg = hz.HatchConfig(diameter_mm=60, cell_mm=0.5, crop=(0, 0, 120, 120))
+    layers, _, _ = hz.flow_hatch(p, cfg, progress=None)
+    assert len(layers) == 4
+    assert len(layers[0]) > len(layers[3]) > 0   # darker layers cover less area

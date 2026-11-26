@@ -21,6 +21,8 @@ from dataclasses import dataclass, field, asdict, fields
 import json
 import math
 
+import numpy as np
+
 
 @dataclass
 class PlotterProfile:
@@ -68,26 +70,29 @@ def polyline_length(pl):
 def order_polylines(polylines, start=(0.0, 0.0)):
     """Greedy nearest-neighbour ordering with optional reversal.
 
-    Cuts pen-up travel dramatically for unordered segment soups such as the
-    radon renderer's JSON output. O(n^2) but fine for a few thousand items.
+    Cuts pen-up travel dramatically for unordered stroke soups. Vectorised:
+    O(n^2) work but only n numpy calls.
     """
-    remaining = [list(p) for p in polylines if len(p) >= 2]
+    pls = [list(p) for p in polylines if len(p) >= 2]
+    if not pls:
+        return []
+    starts = np.array([p[0] for p in pls], dtype=float)
+    ends = np.array([p[-1] for p in pls], dtype=float)
+    left = np.ones(len(pls), dtype=bool)
+    pos = np.array(start, dtype=float)
     ordered = []
-    pos = start
-    while remaining:
-        best_i, best_d, best_rev = 0, float("inf"), False
-        for i, pl in enumerate(remaining):
-            d0 = _dist(pos, pl[0])
-            d1 = _dist(pos, pl[-1])
-            if d0 < best_d:
-                best_i, best_d, best_rev = i, d0, False
-            if d1 < best_d:
-                best_i, best_d, best_rev = i, d1, True
-        pl = remaining.pop(best_i)
-        if best_rev:
-            pl.reverse()
+    for _ in range(len(pls)):
+        d0 = np.hypot(*(starts - pos).T)
+        d1 = np.hypot(*(ends - pos).T)
+        d0[~left] = np.inf
+        d1[~left] = np.inf
+        i0, i1 = int(np.argmin(d0)), int(np.argmin(d1))
+        if d1[i1] < d0[i0]:
+            pl = pls[i1][::-1]; left[i1] = False
+        else:
+            pl = pls[i0]; left[i0] = False
         ordered.append(pl)
-        pos = pl[-1]
+        pos = np.array(pl[-1], dtype=float)
     return ordered
 
 

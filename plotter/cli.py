@@ -15,6 +15,7 @@ import numpy as np
 from PIL import Image
 
 from . import stringart as sa
+from . import hatch as hz
 from .gcode import PlotterProfile, write_gcode, write_svg, order_polylines
 from radon_renderer.config import PAPER_SIZES
 
@@ -78,6 +79,40 @@ def cmd_stringart(args):
     print(f"Wrote {args.output}.gcode / .svg / _preview.png / _compare.png / .json")
 
 
+def cmd_hatch(args):
+    cfg = hz.HatchConfig(
+        paper=args.paper, portrait=args.portrait, padding_mm=args.padding,
+        diameter_mm=args.diameter, shape=args.shape, pen_mm=args.pen,
+        crop=tuple(args.crop) if args.crop else None, gamma=args.gamma, clahe=args.clahe,
+        layer_angles=tuple(args.angles[:args.layers]),
+        layer_thresholds=tuple(args.thresholds[:args.layers]),
+        spacing_max_mm=args.spacing_max, spacing_min_mm=args.spacing_min,
+        flow=args.flow, flow_smooth_mm=args.flow_smooth, flow_bias_angle=args.flow_angle,
+        min_len_mm=args.min_len, max_len_mm=args.max_len, seed=args.seed,
+    )
+    pw, ph, _, _ = sa.layout(cfg)
+    t0 = time.time()
+    layers, darkness, box = hz.flow_hatch(args.image, cfg)
+    # draw layer by layer (light to dark), each layer path-optimised
+    polylines, pos = [], (0.0, 0.0)
+    for layer in layers:
+        ordered = order_polylines(layer, start=pos)
+        if ordered:
+            pos = ordered[-1][-1]
+        polylines += ordered
+    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+    prof = _profile(args)
+    if args.feed:
+        prof.draw_feed = args.feed
+    stats = write_gcode(polylines, args.output + ".gcode", prof, paper_height=ph,
+                        comment=f"flow hatch ({cfg.flow}), {len(layers)} layers, pen {cfg.pen_mm} mm")
+    write_svg(polylines, args.output + ".svg", pw, ph, cfg.pen_mm)
+    sa.render_preview(polylines, cfg, args.output + "_preview.png")
+    print(f"{len(polylines)} strokes in {time.time()-t0:.1f}s; ink {stats['draw_mm']/1000:.1f} m, "
+          f"travel {stats['travel_mm']/1000:.1f} m, ~{stats['est_minutes']:.0f} min")
+    print(f"Wrote {args.output}.gcode / .svg / _preview.png")
+
+
 def cmd_lines2gcode(args):
     """Convert the radon renderer JSON (unchanged look) into ordered G-code."""
     with open(args.json) as f:
@@ -136,6 +171,35 @@ def main(argv=None):
     s.add_argument("--crop", type=int, nargs=4, metavar=("X", "Y", "W", "H"))
     _add_gcode_args(s)
     s.set_defaults(fn=cmd_stringart)
+
+    h = sub.add_parser("hatch", help="curved, tone-layered crosshatch following the image")
+    h.add_argument("image")
+    h.add_argument("-o", "--output", default="out/hatch")
+    h.add_argument("--paper", default="A4", choices=list(PAPER_SIZES))
+    h.add_argument("--portrait", action="store_true")
+    h.add_argument("--padding", type=float, default=10.0)
+    h.add_argument("--diameter", type=float)
+    h.add_argument("--shape", default="circle", choices=["circle", "rect"])
+    h.add_argument("--pen", type=float, default=0.3)
+    h.add_argument("--crop", type=int, nargs=4, metavar=("X", "Y", "W", "H"))
+    h.add_argument("--gamma", type=float, default=1.0)
+    h.add_argument("--clahe", type=float, default=0.0)
+    h.add_argument("--flow", default="contour", choices=["contour", "gradient", "fixed"],
+                   help="contour: strokes wrap around shapes; fixed: classic straight hatching")
+    h.add_argument("--flow-smooth", type=float, default=4.0, help="mm; bigger = calmer curves")
+    h.add_argument("--flow-angle", type=float, default=30.0, help="direction in flat areas / fixed mode")
+    h.add_argument("--layers", type=int, default=4, choices=[1, 2, 3, 4])
+    h.add_argument("--angles", type=float, nargs="+", default=[0, 90, 45, -45],
+                   help="per-layer offset from the flow direction (deg)")
+    h.add_argument("--thresholds", type=float, nargs="+", default=[0.12, 0.40, 0.62, 0.80],
+                   help="darkness where each layer starts")
+    h.add_argument("--spacing-max", type=float, default=2.0, help="mm, lightest spacing")
+    h.add_argument("--spacing-min", type=float, help="mm, darkest spacing (default 2.5 x pen)")
+    h.add_argument("--min-len", type=float, default=5.0)
+    h.add_argument("--max-len", type=float, default=120.0)
+    h.add_argument("--seed", type=int, default=1)
+    _add_gcode_args(h)
+    h.set_defaults(fn=cmd_hatch)
 
     l = sub.add_parser("lines2gcode", help="radon renderer JSON -> G-code/SVG")
     l.add_argument("json")

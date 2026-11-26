@@ -147,5 +147,19 @@ Outputs `out/portrait.gcode`, `.svg`, `_preview.png` (true pen width),
 | `--crop X Y W H` | auto | source crop in pixels; auto trims white borders |
 | `--paper/--portrait/--diameter/--padding` | A4 | layout |
 
+### Flow hatching (curved crosshatch)
+
+Strokes follow the shapes in the image instead of running as straight parallel
+lines; darker tones add crossing layers (across the flow, then diagonals).
+
+```bash
+uv run python -m plotter hatch photo.jpg -o out/hatch --pen 0.3
+uv run python -m plotter hatch photo.jpg -o out/hatch_straight --flow fixed   # classic straight crosshatch
+```
+
+Useful knobs: `--flow-smooth` (mm, calmer vs more detailed curves), `--layers 1-4`,
+`--thresholds` (darkness where each layer starts), `--spacing-max/--spacing-min`,
+`--min-len`, `--shape rect`.
+
 See `TODO.md` for the review of the existing code and the roadmap
 (better crosshatching, preview UI, string-art quality).

@@ -60,16 +60,23 @@ Open (in rough order of value):
 
 ## 2. Better crosshatch (keep the current look as one style)
 
-Keep `radon_renderer` modes as-is (`lines2gcode` plots them unchanged). Add new styles next to them:
+Keep `radon_renderer` modes as-is (`lines2gcode` plots them unchanged). New style next to them:
+`python -m plotter hatch photo.jpg -o out/hatch` — **curved, not just parallel**.
 
-- [ ] **Tonal crosshatch**: N tone levels; layer k hatches at angle θk only *inside* regions darker than level k
-      (clip segments to the region instead of full-circle chords). Classic engraving look: light areas get one
-      direction, darker areas add a 2nd/3rd/4th direction. Spacing ≥ ~2× pen width so layers stay readable
-- [ ] Variable spacing within a layer (spacing ∝ 1/darkness) instead of on/off regions
-- [ ] Contour-following hatching: hatch angle follows the local image gradient (structure tensor) → looks drawn by hand
-- [ ] Serpentine (boustrophedon) ordering inside each region → minimal pen lifts
-- [ ] Minimum segment length + slight line overlap at region joins (avoid dotted look)
-- [ ] Optional outline pass (edge contours from Canny, simplified) on top of hatching
+- [x] **Flow hatching**: strokes are streamlines of a direction field from the image (structure tensor),
+      so layer 1 wraps around shapes (cheek, jaw, hair) instead of running as straight parallel chords
+- [x] **Tonal layering**: layer 2 crosses layer 1 (follows the gradient), layers 3/4 diagonal, each only in
+      darker tones (`--thresholds`); spacing varies continuously with darkness, min spacing = 2.5 x pen width
+- [x] Evenly-spaced streamline placement (Jobard–Lefer): seeds beside finished lines, lines stop when too close
+- [x] `--flow fixed` = classic straight crosshatch with the same tone logic, for comparison
+- [x] Layer-by-layer drawing, path-optimised (vectorised nearest neighbour), RDP-simplified strokes
+- [x] Circle (matches string art) or `--shape rect`
+- [ ] Stroke ends: taper by lifting slightly / shorten so ends don't form visible "seams" along tone boundaries
+- [ ] Stubs in very dark areas (short strokes squeezed between others) – merge or drop below a length
+- [ ] Optional outline pass (edge contours, simplified) on top of the hatching
+- [ ] Other non-parallel fills worth trying: concentric/spiral modulated by tone, stippling-to-TSP single line,
+      wave lines with amplitude ∝ darkness
+- [ ] Mix: string-art circle with flow-hatched features (eyes/mouth) on top
 
 ## 3. Preview / UI
 
