@@ -83,6 +83,9 @@ def cmd_hatch(args):
         min_len_mm=args.min_len, max_len_mm=args.max_len, seed=args.seed,
         tone_smooth_mm=args.tone_smooth, seed_margin=args.seed_margin,
         overrun=args.overrun, min_len_spacings=args.min_len_spacings,
+        tone_model=args.tone_model, merge_gap_mm=args.merge_gap, merge_angle_deg=args.merge_angle,
+        outline_levels=tuple(args.outline or ()), outline_smooth_mm=args.outline_smooth,
+        outline_min_len_mm=args.outline_min_len,
     )
     t0 = time.time()
     res = pipeline.build_hatch(args.image, cfg)
@@ -93,7 +96,8 @@ def cmd_hatch(args):
                             comment=f"flow hatch ({cfg.flow}), {len(cfg.layer_angles)} layers, pen {cfg.pen_mm} mm")
     sa.render_preview(res.polylines, cfg, args.output + "_preview.png")
     print(f"{len(res.polylines)} strokes in {time.time()-t0:.1f}s; ink {stats['draw_mm']/1000:.1f} m, "
-          f"travel {stats['travel_mm']/1000:.1f} m, ~{stats['est_minutes']:.0f} min")
+          f"travel {stats['travel_mm']/1000:.1f} m, {stats['pen_lifts']} pen lifts, "
+          f"~{stats['est_minutes']:.0f} min (of which lifts {stats['pen_lift_minutes']:.0f})")
     print(f"Wrote {args.output}.gcode / .svg / _preview.png")
 
 
@@ -188,6 +192,15 @@ def main(argv=None):
                    help="start lines only this much darker than the layer threshold")
     h.add_argument("--overrun", type=float, default=0.10,
                    help="lines may run past their layer boundary by up to this much darkness (staggers ends)")
+    h.add_argument("--tone-model", default="linear", choices=["linear", "coverage"],
+                   help="coverage: spacing from real ink coverage of crossing layers (richer tones, more ink)")
+    h.add_argument("--merge-gap", type=float, default=0.0,
+                   help="mm; join aligned stroke ends closer than this (fewer pen lifts). Try 4")
+    h.add_argument("--merge-angle", type=float, default=50.0)
+    h.add_argument("--outline", type=float, nargs="*", metavar="LEVEL",
+                   help="draw contour lines at these darkness levels on top, e.g. --outline 0.5")
+    h.add_argument("--outline-smooth", type=float, default=2.5)
+    h.add_argument("--outline-min-len", type=float, default=15.0)
     h.add_argument("--min-len-spacings", type=float, default=4.0,
                    help="drop strokes shorter than N local line spacings")
     _add_gcode_args(h)

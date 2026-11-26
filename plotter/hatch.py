@@ -62,7 +62,14 @@ class HatchConfig:
     tone_smooth_mm: float = 1.0       # smooth the darkness map that switches layers on/off
     seed_margin: float = 0.05         # only start lines this much darker than the layer threshold
     overrun: float = 0.10             # a started line may continue until threshold - U(0, overrun)
-    min_len_spacings: float = 4.0     # drop strokes shorter than this many local spacings        # stop at sharp turns / field singularities
+    min_len_spacings: float = 4.0     # drop strokes shorter than this many local spacings
+    # optional improvements (defaults keep the original look)
+    tone_model: str = "linear"        # linear | coverage (spacing from real ink coverage of crossing layers)
+    merge_gap_mm: float = 0.0         # join aligned stroke ends closer than this (fewer pen lifts); 0 = off
+    merge_angle_deg: float = 50.0
+    outline_levels: tuple = ()        # darkness iso-levels to draw as contour lines, e.g. (0.35, 0.65)
+    outline_smooth_mm: float = 2.5
+    outline_min_len_mm: float = 15.0        # stop at sharp turns / field singularities
     seed: int = 1
 
     def s_min(self):
@@ -99,116 +106,180 @@ def _disk(r):
 
 
 class _Stamp:
-    """Boolean raster with variable-radius disk stamping."""
+    """Boolean raster with variable-radius disk stamping.
+
+    Backed by a bytearray so the tracer can read single cells at Python
+    speed, with a numpy view over the same memory for vectorised stamping.
+    """
 
     def __init__(self, shape):
-        self.a = np.zeros(shape, dtype=bool)
+        self.h, self.w = shape
+        self.buf = bytearray(self.h * self.w)
+        self.a = np.frombuffer(self.buf, dtype=np.uint8).reshape(shape)
         self.disks = {}
 
     def stamp(self, ys, xs, radii):
-        h, w = self.a.shape
-        for y, x, r in zip(ys, xs, radii):
-            k = max(1, int(math.ceil(r)))
-            if k not in self.disks:
-                self.disks[k] = _disk(k)
-            dy, dx = self.disks[k]
-            yy = np.clip(dy + int(y), 0, h - 1)
-            xx = np.clip(dx + int(x), 0, w - 1)
-            self.a[yy, xx] = True
+        k = np.maximum(1, np.ceil(radii).astype(np.int64))
+        iy = ys.astype(np.int64)
+        ix = xs.astype(np.int64)
+        for kk in np.unique(k):
+            if kk not in self.disks:
+                self.disks[kk] = _disk(kk)
+            dy, dx = self.disks[kk]
+            sel = k == kk
+            yy = np.clip(iy[sel, None] + dy[None, :], 0, self.h - 1)
+            xx = np.clip(ix[sel, None] + dx[None, :], 0, self.w - 1)
+            self.a[yy, xx] = 1
 
     def hit(self, y, x):
-        return self.a[int(y), int(x)]
+        return self.buf[int(y) * self.w + int(x)]
 
 
 def _rdp(pts, eps):
-    if len(pts) < 3:
+    """Ramer-Douglas-Peucker, iterative (same result as the recursive form)."""
+    n = len(pts)
+    if n < 3:
         return pts
-    a, b = np.array(pts[0]), np.array(pts[-1])
-    p = np.array(pts)
-    ab = b - a
-    n = np.hypot(*ab)
-    if n < 1e-12:
-        d = np.hypot(*(p - a).T)
-    else:
-        d = np.abs(ab[0] * (p[:, 1] - a[1]) - ab[1] * (p[:, 0] - a[0])) / n
-    i = int(np.argmax(d))
-    if d[i] > eps:
-        return _rdp(pts[:i + 1], eps)[:-1] + _rdp(pts[i:], eps)
-    return [pts[0], pts[-1]]
+    p = np.asarray(pts, dtype=float)
+    keep = np.zeros(n, dtype=bool)
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        i0, i1 = stack.pop()
+        if i1 - i0 < 2:
+            continue
+        a, b = p[i0], p[i1]
+        seg = p[i0:i1 + 1]
+        ab = b - a
+        nrm = np.hypot(*ab)
+        if nrm < 1e-12:
+            d = np.hypot(*(seg - a).T)
+        else:
+            d = np.abs(ab[0] * (seg[:, 1] - a[1]) - ab[1] * (seg[:, 0] - a[0])) / nrm
+        i = int(np.argmax(d))
+        if d[i] > eps:
+            keep[i0 + i] = True
+            stack.append((i0, i0 + i))
+            stack.append((i0 + i, i1))
+    return [pts[i] for i in np.flatnonzero(keep)]
 
 
-def hatch_layer(darkness, mask, theta, threshold, cfg, px, rng):
+class _Shared:
+    """Per-image data reused by every layer."""
+
+    def __init__(self, darkness, mask, cfg, px):
+        self.tone = (ndimage.gaussian_filter(darkness, cfg.tone_smooth_mm / px)
+                     if cfg.tone_smooth_mm else darkness)
+        self.tone_l = self.tone.ravel().tolist()
+        self.mask_l = mask.ravel().tolist()
+
+
+def hatch_layer(darkness, mask, theta, threshold, cfg, px, rng, shared=None):
     """Evenly spaced streamlines for one layer. Returns polylines in cell units."""
     h, w = darkness.shape
     smin, smax = cfg.s_min() / px, cfg.spacing_max_mm / px
-    tone = ndimage.gaussian_filter(darkness, cfg.tone_smooth_mm / px) if cfg.tone_smooth_mm else darkness
+    shared = shared or _Shared(darkness, mask, cfg, px)
+    tone = shared.tone
     u = np.clip((tone - threshold) / max(1e-6, 1 - threshold), 0, 1)
     seedable = mask & (tone > threshold + cfg.seed_margin)
-    spacing = smax - (smax - smin) * u            # cells
+    if cfg.tone_model == "coverage":
+        # each active layer adds coverage c = pen / spacing; crossing layers combine
+        # like random opaque ink: 1 - prod(1 - c). Solve for c so the total matches tone.
+        thr_all = np.asarray(cfg.layer_thresholds, dtype=float)
+        n_active = np.maximum(1, (tone[..., None] > thr_all).sum(-1))
+        cov = 1.0 - (1.0 - np.clip(tone, 0.0, 0.999)) ** (1.0 / n_active)
+        spacing = np.clip(cfg.pen_mm / np.maximum(cov, 1e-6) / px, smin, smax)
+    elif cfg.tone_model == "linear":
+        spacing = smax - (smax - smin) * u        # cells
+    else:
+        raise ValueError(f"unknown tone_model {cfg.tone_model!r}")
     cos_t, sin_t = np.cos(theta), np.sin(theta)
+
+    # flat Python lists: scalar reads are ~5x faster than numpy indexing in the tracer
+    cos_l = cos_t.ravel().tolist()
+    sin_l = sin_t.ravel().tolist()
+    tone_l = shared.tone_l
+    mask_l = shared.mask_l
 
     sep = _Stamp(darkness.shape)                  # radius = spacing: no new seeds inside
     stop = _Stamp(darkness.shape)                 # radius = spacing/2: tracing stops
+    stop_b, sep_b = stop.buf, sep.buf
     step = cfg.step_mm / px
+    half = step / 2
     max_steps = int(cfg.max_len_mm / cfg.step_mm)
     cos_turn = math.cos(math.radians(cfg.max_turn_deg))
 
-    end_thr = threshold
-
-    def ok(y, x):
-        return (0 <= y < h and 0 <= x < w and mask[int(y), int(x)]
-                and tone[int(y), int(x)] > end_thr and not stop.hit(y, x))
-
-    def trace(y, x, sign):
+    def trace(y, x, sign, end_thr):
         pts = []
         py, px_ = y, x
-        prev = None
+        has_prev = False
+        pdx = pdy = 0.0
         for _ in range(max_steps):
-            iy, ix = int(py), int(px_)
-            d = np.array([cos_t[iy, ix], sin_t[iy, ix]])
-            if prev is None:
-                d *= sign
-            elif d @ prev < 0:
-                d = -d
+            c = int(py) * w + int(px_)
+            dx, dy = cos_l[c], sin_l[c]
+            if not has_prev:
+                dx *= sign; dy *= sign
+            elif dx * pdx + dy * pdy < 0:
+                dx = -dx; dy = -dy
             # midpoint (RK2)
-            my, mx = py + d[1] * step / 2, px_ + d[0] * step / 2
+            my, mx = py + dy * step / 2, px_ + dx * step / 2
             if not (0 <= my < h and 0 <= mx < w):
                 break
-            d2 = np.array([cos_t[int(my), int(mx)], sin_t[int(my), int(mx)]])
-            if d2 @ d < 0:
-                d2 = -d2
-            if prev is not None and d2 @ prev < cos_turn:
+            c = int(my) * w + int(mx)
+            d2x, d2y = cos_l[c], sin_l[c]
+            if d2x * dx + d2y * dy < 0:
+                d2x = -d2x; d2y = -d2y
+            if has_prev and d2x * pdx + d2y * pdy < cos_turn:
                 break
-            ny, nx = py + d2[1] * step, px_ + d2[0] * step
-            if not ok(ny, nx):
+            ny, nx = py + d2y * step, px_ + d2x * step
+            if not (0 <= ny < h and 0 <= nx < w):
+                break
+            c = int(ny) * w + int(nx)
+            if not mask_l[c] or not tone_l[c] > end_thr or stop_b[c]:
                 break
             pts.append((ny, nx))
-            py, px_, prev = ny, nx, d2
+            py, px_, pdx, pdy, has_prev = ny, nx, d2x, d2y, True
         return pts
+
+    # jittered seed grid (same random stream as drawing it point by point),
+    # shuffled, then pre-filtered to cells where this layer may start a line
+    gs = max(1, int(smin))
+    gy, gx = np.mgrid[0:h - gs:gs, 0:w - gs:gs]
+    r = rng.random(2 * gy.size).reshape(-1, 2)
+    seeds_y = gy.ravel() + r[:, 0] * gs
+    seeds_x = gx.ravel() + r[:, 1] * gs
+    order = list(range(gy.size))
+    rng.shuffle(order)
+    order = np.asarray(order, dtype=np.int64)
+    seeds_y, seeds_x = seeds_y[order], seeds_x[order]
+    ok_seed = seedable[seeds_y.astype(np.int64), seeds_x.astype(np.int64)]
+    grid = list(zip(seeds_y[ok_seed].tolist(), seeds_x[ok_seed].tolist()))
+    seedable_l = seedable.ravel().tolist()
 
     lines = []
     queue = deque()
-    gs = max(1, int(smin))
-    grid = [(y + rng.random() * gs, x + rng.random() * gs)
-            for y in range(0, h - gs, gs) for x in range(0, w - gs, gs)]
-    rng.shuffle(grid)
     gi = 0
+    side_k = max(1, int(smin / step))
     while True:
         if queue:
             y, x = queue.popleft()
+            if not (0 <= y < h and 0 <= x < w):
+                continue
         elif gi < len(grid):
             y, x = grid[gi]; gi += 1
         else:
             break
-        if not (0 <= y < h and 0 <= x < w) or not seedable[int(y), int(x)] or sep.hit(y, x):
+        c = int(y) * w + int(x)
+        if not seedable_l[c] or sep_b[c]:
             continue
         # staggered per-line end threshold: no stubs at ragged edges, no aligned seams
         end_thr = threshold - cfg.overrun * rng.random()
-        fwd = trace(y, x, 1.0)
-        bwd = trace(y, x, -1.0)
+        fwd = trace(y, x, 1.0, end_thr)
+        bwd = trace(y, x, -1.0, end_thr)
         pts = bwd[::-1] + [(y, x)] + fwd
-        ys = np.array([p[0] for p in pts]); xs = np.array([p[1] for p in pts])
-        sp = spacing[ys.astype(int), xs.astype(int)]
+        arr = np.asarray(pts)
+        ys, xs = arr[:, 0], arr[:, 1]
+        sp = spacing[ys.astype(np.int64), xs.astype(np.int64)]
         length = (len(pts) - 1) * step               # cells
         if length * px < cfg.min_len_mm or length < cfg.min_len_spacings * sp.mean():
             continue
@@ -216,14 +287,121 @@ def hatch_layer(darkness, mask, theta, threshold, cfg, px, rng):
         sep.stamp(ys[::2], xs[::2], sp[::2] * 0.95)
         lines.append(pts)
         # side seeds (Jobard-Lefer): one spacing away on both sides
-        k = max(1, int(smin / step))
-        for i in range(0, len(pts), k):
-            iy, ix = int(ys[i]), int(xs[i])
-            ny_, nx_ = cos_t[iy, ix], -sin_t[iy, ix]   # normal (y, x)
-            s = sp[i]
-            queue.append((ys[i] + ny_ * s, xs[i] + nx_ * s))
-            queue.append((ys[i] - ny_ * s, xs[i] - nx_ * s))
+        idx = np.arange(0, len(pts), side_k)
+        cc = ys[idx].astype(np.int64) * w + xs[idx].astype(np.int64)
+        ny_, nx_ = cos_t.ravel()[cc], -sin_t.ravel()[cc]    # normal (y, x)
+        s_ = sp[idx]
+        a_y, a_x = ys[idx] + ny_ * s_, xs[idx] + nx_ * s_
+        b_y, b_x = ys[idx] - ny_ * s_, xs[idx] - nx_ * s_
+        for t in zip(a_y.tolist(), a_x.tolist(), b_y.tolist(), b_x.tolist()):
+            queue.append((t[0], t[1]))
+            queue.append((t[2], t[3]))
     return lines
+
+
+def merge_strokes(lines, max_gap, max_angle_deg):
+    """Join stroke ends that are close and roughly continue each other.
+
+    Each end links to at most one other end, no cycles; the short connector is
+    drawn pen-down. Returns fewer, longer polylines (same points, same order
+    within each stroke) -> fewer pen lifts.
+    """
+    from scipy.spatial import cKDTree
+    n = len(lines)
+    if n < 2 or max_gap <= 0:
+        return lines
+    P = np.array([[l[0], l[-1]] for l in lines], dtype=float)          # (n, 2 ends, xy)
+    out = np.array([[np.subtract(l[0], l[1]), np.subtract(l[-1], l[-2])] for l in lines], dtype=float)
+    out /= np.linalg.norm(out, axis=-1, keepdims=True) + 1e-12
+    pts = P.reshape(-1, 2)
+    cos_max = math.cos(math.radians(max_angle_deg))
+    pairs = cKDTree(pts).query_pairs(max_gap, output_type="ndarray")
+    cand = []
+    for a, b in pairs:
+        i, j = a // 2, b // 2
+        if i == j:
+            continue
+        oa, ob = out[i, a % 2], out[j, b % 2]
+        v = pts[b] - pts[a]
+        d = float(np.hypot(*v))
+        if d > 1e-9:
+            v /= d
+            if v @ oa < cos_max or -(v @ ob) < cos_max:
+                continue
+        elif -(oa @ ob) < cos_max:
+            continue
+        cand.append((d, a, b))
+    cand.sort()
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    link = {}
+    for d, a, b in cand:
+        if a in link or b in link:
+            continue
+        ri, rj = find(a // 2), find(b // 2)
+        if ri == rj:
+            continue
+        parent[ri] = rj
+        link[a] = b
+        link[b] = a
+
+    used = [False] * n
+    merged = []
+
+    def walk(i, enter_end):
+        chain = []
+        while True:
+            used[i] = True
+            seg = lines[i] if enter_end == 0 else lines[i][::-1]
+            chain.extend(seg)
+            exit_end = 1 - enter_end
+            nxt = link.get(2 * i + exit_end)
+            if nxt is None or used[nxt // 2]:
+                return chain
+            i, enter_end = nxt // 2, nxt % 2
+
+    for i in range(n):                       # start chains at free ends
+        if used[i]:
+            continue
+        if (2 * i) not in link:
+            merged.append(walk(i, 0))
+        elif (2 * i + 1) not in link:
+            merged.append(walk(i, 1))
+    for i in range(n):                       # (cannot happen: no cycles) safety
+        if not used[i]:
+            merged.append(walk(i, 0))
+    return merged
+
+
+def outline_contours(darkness, mask, cfg, px):
+    """Iso-darkness contour lines (cell units), clipped away from the mask edge."""
+    from skimage.measure import find_contours
+    if not cfg.outline_levels:
+        return []
+    d = ndimage.gaussian_filter(darkness, cfg.outline_smooth_mm / px)
+    inner = ndimage.binary_erosion(mask, iterations=3)
+    h, w = d.shape
+    out = []
+    for level in cfg.outline_levels:
+        for c in find_contours(d, level):
+            iy = np.clip(c[:, 0].astype(int), 0, h - 1)
+            ix = np.clip(c[:, 1].astype(int), 0, w - 1)
+            ok = inner[iy, ix]
+            # split where the contour leaves the drawable area
+            breaks = np.flatnonzero(np.diff(ok.astype(np.int8)) != 0) + 1
+            for part, okp in zip(np.split(c, breaks), np.split(ok, breaks)):
+                if not okp[0] or len(part) < 2:
+                    continue
+                seglen = np.hypot(*np.diff(part, axis=0).T).sum() * px
+                if seglen >= cfg.outline_min_len_mm:
+                    out.append([(float(y), float(x)) for y, x in part])
+    return out
 
 
 def flow_hatch(image_path, cfg, progress=print):
@@ -237,19 +415,32 @@ def flow_hatch(image_path, cfg, progress=print):
     gray = 1.0 - darkness
     base = direction_field(gray, cfg, px)
     rng = np.random.default_rng(cfg.seed)
+    shared = _Shared(darkness, mask, cfg, px)
 
     layers = []
     for k, (off, thr) in enumerate(zip(cfg.layer_angles, cfg.layer_thresholds)):
         theta = base + math.radians(off)
-        cell_lines = hatch_layer(darkness, mask, theta, thr, cfg, px, rng)
+        cell_lines = hatch_layer(darkness, mask, theta, thr, cfg, px, rng, shared)
         mm = []
         x0, y0 = cx - R, cy - R
         for pts in cell_lines:
             pl = [(x0 + (x + 0.5) * px, y0 + (y + 0.5) * px) for y, x in pts]
             mm.append(_rdp(pl, 0.03))
+        if cfg.merge_gap_mm > 0:
+            before = len(mm)
+            mm = merge_strokes(mm, cfg.merge_gap_mm, cfg.merge_angle_deg)
+            if progress:
+                progress(f"  layer {k+1}: merged {before} -> {len(mm)} strokes")
         layers.append(mm)
         if progress:
             progress(f"  layer {k+1}: offset {off:+.0f}°, from darkness {thr:.2f}: {len(mm)} strokes")
+    if cfg.outline_levels:
+        x0, y0 = cx - R, cy - R
+        outl = [_rdp([(x0 + (x + 0.5) * px, y0 + (y + 0.5) * px) for y, x in c], 0.03)
+                for c in outline_contours(darkness, mask, cfg, px)]
+        layers.append(outl)                   # drawn last, on top
+        if progress:
+            progress(f"  outline: {len(outl)} contours at levels {list(cfg.outline_levels)}")
     return layers, darkness, box
 
 

@@ -186,6 +186,12 @@ const STYLE_PARAMS = {
     {k:"min_len_mm", label:"Min stroke", unit:"mm", min:0, max:30, step:1, v:5},
     {k:"min_len_spacings", label:"Min stroke (× spacing)", min:0, max:12, step:0.5, v:4},
     {k:"max_len_mm", label:"Max stroke", unit:"mm", min:10, max:300, step:5, v:120},
+    {k:"tone_model", label:"Tone model", type:"select", opts:["linear","coverage"], v:"linear"},
+    {k:"merge_gap_mm", label:"Merge stroke ends (0 = off)", unit:"mm", min:0, max:8, step:0.5, v:0},
+    {k:"merge_angle_deg", label:"Merge max bend", unit:"°", min:10, max:80, step:5, v:50},
+    {k:"outline_levels", label:"Outline levels (e.g. 0.5)", type:"text", v:""},
+    {k:"outline_smooth_mm", label:"Outline smoothing", unit:"mm", min:0.5, max:6, step:0.25, v:2.5},
+    {k:"outline_min_len_mm", label:"Outline min length", unit:"mm", min:0, max:60, step:1, v:15},
     {k:"shape", label:"Shape", type:"select", opts:["circle","rect"], v:"circle"},
     {k:"seed", label:"Random seed", min:1, max:99, step:1, v:1},
   ],
@@ -209,6 +215,7 @@ const PROFILE = [
   {k:"offset_x", label:"Offset X", unit:"mm", min:-200, max:200, step:1, v:0},
   {k:"offset_y", label:"Offset Y", unit:"mm", min:-200, max:200, step:1, v:0},
   {k:"pause_every_mm", label:"Pause (M0) every", unit:"mm", min:0, max:500000, step:1000, v:0},
+  {k:"pen_move_s", label:"Pen up/down time (estimate only)", unit:"s", min:0, max:1, step:0.05, v:0.15},
 ];
 const PROFILE_TEXT = {header:"G21\nG90", footer:"G0 X0 Y0"};
 
@@ -412,7 +419,7 @@ function fmtMin(m){ return m >= 90 ? (m/60).toFixed(1)+" h" : Math.round(m)+" mi
 function showStats(){
   const s = S.result.stats, f = S.result.files, parts = [];
   if(s.lines != null) parts.push(`<span>lines <b>${s.lines}</b></span>`);
-  parts.push(`<span>pen-down strokes <b>${s.pen_lifts}</b></span>`);
+  parts.push(`<span>pen lifts <b>${s.pen_lifts}</b></span>`);
   parts.push(`<span>ink <b>${(s.draw_mm/1000).toFixed(1)} m</b></span>`);
   parts.push(`<span>travel <b>${(s.travel_mm/1000).toFixed(1)} m</b></span>`);
   parts.push(`<span>plot time ≈ <b>${fmtMin(s.est_minutes)}</b></span>`);

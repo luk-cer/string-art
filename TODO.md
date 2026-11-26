@@ -74,6 +74,10 @@ Keep `radon_renderer` modes as-is (`lines2gcode` plots them unchanged). New styl
 - [x] Stubs: smoothed layer map (`--tone-smooth`), seeds only well inside a layer (`--seed-margin`),
       min length relative to spacing (`--min-len-spacings`). Darkest layer: short-stroke ink 33% → 8%
 - [x] Seams: each line ends at its own randomly lowered threshold (`--overrun`), so ends are staggered
+- [x] Speed: ~2x faster with byte-identical output (vectorised seeding/stamping, list-based tracer, iterative RDP)
+- [x] `--tone-model coverage` (physically matched tones), `--merge-gap` (fewer pen lifts), `--outline LEVEL`
+- [x] Time estimate includes pen lifts (`pen_move_s` in the profile)
+- [ ] Faster still: numba/cython for the tracer (would add a dependency)
 - [ ] Remaining short strokes in converging flow (lines squeezed out) – try merging end-to-end neighbours
 - [ ] Optional outline pass (edge contours, simplified) on top of the hatching
 - [ ] Other non-parallel fills worth trying: concentric/spiral modulated by tone, stippling-to-TSP single line,

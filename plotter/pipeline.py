@@ -7,6 +7,7 @@ ordered polylines (paper mm, y-down) ready for G-code, plus preview rasters.
 
 from dataclasses import dataclass, field, fields
 import os
+import re
 import tempfile
 
 import numpy as np
@@ -36,10 +37,14 @@ def config_from_dict(cls, d):
         if f.name not in d or d[f.name] is None or d[f.name] == "":
             continue
         v = d[f.name]
-        t = str(f.type)
+        t = f.type if isinstance(f.type, str) else getattr(f.type, "__name__", None) or str(f.type)
+        if t.startswith("Optional") or t.startswith("Union"):
+            t = str(f.type)
         if f.name == "crop":
             v = tuple(int(round(x)) for x in v)
         elif t.startswith("tuple"):
+            if isinstance(v, str):
+                v = [x for x in re.split(r"[,\s]+", v) if x]
             v = tuple(float(x) for x in v)
         elif t.startswith("bool"):
             v = bool(v) if not isinstance(v, str) else v.lower() in ("1", "true", "yes", "on")

@@ -43,6 +43,8 @@ class PlotterProfile:
     # (0 = never). Uses M0, which GRBL treats as "program pause".
     pause_every_mm: float = 0.0
     pause_command: str = "M0"
+    # only for the time estimate: seconds one Z move takes (excluding dwell)
+    pen_move_s: float = 0.15
 
     @classmethod
     def load(cls, path):
@@ -166,10 +168,14 @@ def write_gcode(polylines, path, profile=None, paper_height=None, comment=None):
     with open(path, "w") as f:
         f.write("\n".join(out) + "\n")
 
-    est_min = draw_mm / p.draw_feed + travel_mm / (p.travel_feed or 3000.0)
+    lifts = sum(1 for line in out if line == p.pen_up)
+    lift_min = lifts * 2 * (p.pen_move_s + p.dwell_s) / 60.0
+    est_min = draw_mm / p.draw_feed + travel_mm / (p.travel_feed or 3000.0) + lift_min
     return {
         "draw_mm": draw_mm,
         "travel_mm": travel_mm,
+        "pen_lifts": lifts,
+        "pen_lift_minutes": lift_min,
         "est_minutes": est_min,
         "gcode_lines": len(out),
     }

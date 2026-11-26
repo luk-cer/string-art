@@ -172,6 +172,14 @@ uv run python -m plotter hatch photo.jpg -o out/hatch --pen 0.3
 uv run python -m plotter hatch photo.jpg -o out/hatch_straight --flow fixed   # classic straight crosshatch
 ```
 
+Optional improvements (off by default, so the default look is unchanged):
+
+| Flag | Effect |
+|---|---|
+| `--tone-model coverage` | spacing chosen so the real ink coverage of the crossing layers matches the photo's darkness: richer tones, clearer face, ~45% more ink |
+| `--merge-gap 4` | joins stroke ends that continue each other: ~18% fewer pen lifts, same look |
+| `--outline 0.5` | adds smooth contour lines at that darkness level on top (defines jaw/nose/hair edges) |
+
 Useful knobs: `--flow-smooth` (mm, calmer vs more detailed curves), `--layers 1-4`,
 `--thresholds` (darkness where each layer starts), `--spacing-max/--spacing-min`,
 `--min-len`, `--shape rect`.
