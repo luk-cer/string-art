@@ -56,6 +56,12 @@ class PlotterProfile:
     z_rapid_feed: float = 3000.0
     junction_deviation_mm: float = 0.01   # FluidNC default
     planner_blocks: int = 16              # FluidNC default
+    # Bounds check: refuse G-code with any X/Y target outside 0..machine size (G-code coordinates,
+    # i.e. after flip and offsets). Defaults = max_travel_mm in the FluidNC config. Assumes the work
+    # origin is the homed corner (0, 0); 0 = no machine check.
+    check_bounds: bool = True
+    machine_x_mm: float = 320.0
+    machine_y_mm: float = 380.0
     # fallback when the pen commands have no Z word (e.g. M3/M5 servo): seconds per pen move
     pen_move_s: float = 0.15
 
@@ -268,11 +274,45 @@ def estimate_time(events, p):
     return res
 
 
-def write_gcode(polylines, path, profile=None, paper_height=None, comment=None):
+class OutOfBounds(ValueError):
+    """The G-code would move outside the machine or draw off the paper."""
+
+
+def check_bounds(p, ext, extra_lines, off_paper, paper_width, paper_height):
+    """Raise OutOfBounds when any XY target (ext = [xmin, ymin, xmax, ymax] in G-code
+    coordinates), or an X/Y word in the header/footer, lies outside 0..machine size,
+    or a stroke point lies off the paper. Called before anything is written."""
+    import re
+    for line in extra_lines:
+        line = (line or "").split(";")[0]
+        if re.match(r"\s*G0*[01]\b", line, re.I):
+            for ax, i in (("X", 0), ("Y", 1)):
+                m = re.search(ax + r"\s*(-?[\d.]+)", line, re.I)
+                if m:
+                    v = float(m.group(1))
+                    ext[i], ext[i + 2] = min(ext[i], v), max(ext[i + 2], v)
+    problems = []
+    if off_paper:
+        pts = ", ".join(f"({x:.1f}, {y:.1f})" for x, y in off_paper)
+        problems.append(f"strokes leave the {paper_width:g} x {paper_height:g} mm paper, e.g. at {pts}")
+    if p.check_bounds and p.machine_x_mm > 0 and p.machine_y_mm > 0 and ext[0] <= ext[2]:
+        tol = 1e-6
+        if ext[0] < -tol or ext[1] < -tol or ext[2] > p.machine_x_mm + tol or ext[3] > p.machine_y_mm + tol:
+            problems.append(f"moves span X {ext[0]:.1f}..{ext[2]:.1f}, Y {ext[1]:.1f}..{ext[3]:.1f} mm, "
+                            f"but the machine area is X 0..{p.machine_x_mm:g}, Y 0..{p.machine_y_mm:g} "
+                            f"(profile machine_x_mm / machine_y_mm)")
+    if problems:
+        raise OutOfBounds("G-code not written: " + "; ".join(problems) +
+                          ". Use a smaller paper size, more padding, or change the offsets.")
+
+
+def write_gcode(polylines, path, profile=None, paper_height=None, comment=None, paper_width=None):
     """Write polylines (lists of (x, y) in mm, y-down) as plotter G-code.
 
     Consecutive polylines whose end/start coincide are drawn without lifting
     the pen. Returns a stats dict (draw / travel distance, estimated time).
+    Raises OutOfBounds (and writes nothing) when a move would leave the machine
+    area, or, when paper_width is given, a stroke would leave the paper.
     """
     p = profile or PlotterProfile()
     if p.flip_y and paper_height is None:
@@ -280,10 +320,17 @@ def write_gcode(polylines, path, profile=None, paper_height=None, comment=None):
 
     fmt = f"{{:.{p.decimals}f}}"
 
+    ext = [math.inf, math.inf, -math.inf, -math.inf]     # machine-coordinate extents of every XY target
+    off_paper = []
+
     def xy(pt):
+        if paper_width is not None and paper_height is not None and len(off_paper) < 3 and not (
+                -0.01 <= pt[0] <= paper_width + 0.01 and -0.01 <= pt[1] <= paper_height + 0.01):
+            off_paper.append(pt)
         x = pt[0] + p.offset_x
         y = (paper_height - pt[1]) if p.flip_y else pt[1]
         y += p.offset_y
+        ext[0], ext[1], ext[2], ext[3] = min(ext[0], x), min(ext[1], y), max(ext[2], x), max(ext[3], y)
         return f"X{fmt.format(x)} Y{fmt.format(y)}"
 
     out = []
@@ -354,6 +401,8 @@ def write_gcode(polylines, path, profile=None, paper_height=None, comment=None):
         pen(p.pen_up)
     out += list(p.footer)
 
+    check_bounds(p, ext, list(p.header) + list(p.footer) + [p.pause_command], off_paper,
+                 paper_width, paper_height)
     with open(path, "w") as f:
         f.write("\n".join(out) + "\n")
 

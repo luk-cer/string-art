@@ -91,3 +91,27 @@ def test_time_estimate_straight_line():
     # 100 mm at 60 mm/s, accel 1000: 100/60 + 60/1000
     t = estimate_time([("xy", 100.0, 0.0, 3600.0)], p)
     assert math.isclose(t["total"], 100 / 60 + 60 / 1000, rel_tol=1e-6)
+
+
+def test_bounds_check_refuses_and_writes_nothing(tmp_path):
+    import pytest
+    from plotter.gcode import OutOfBounds
+    out = tmp_path / "b.gcode"
+    # inside: fine
+    write_gcode([[(10, 10), (200, 10)]], out, paper_height=210, paper_width=297)
+    out.unlink()
+    # machine is 320 wide: an A3-wide stroke at x=400 is refused
+    with pytest.raises(OutOfBounds, match="machine area"):
+        write_gcode([[(10, 10), (400, 10)]], out, paper_height=297, paper_width=420)
+    assert not out.exists()
+    # offset pushes it negative
+    with pytest.raises(OutOfBounds):
+        write_gcode([[(10, 10), (20, 10)]], out, PlotterProfile(offset_x=-50), paper_height=210)
+    # off the paper
+    with pytest.raises(OutOfBounds, match="paper"):
+        write_gcode([[(10, 10), (300, 10)]], out, paper_height=210, paper_width=297)
+    # footer moves are checked too
+    with pytest.raises(OutOfBounds):
+        write_gcode([[(10, 10), (20, 10)]], out, PlotterProfile(footer=["G0 X500 Y0"]), paper_height=210)
+    # check can be switched off (paper check still applies only when paper_width is given)
+    write_gcode([[(10, 10), (400, 10)]], out, PlotterProfile(check_bounds=False), paper_height=297)

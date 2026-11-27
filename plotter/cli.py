@@ -176,7 +176,7 @@ def cmd_lines2gcode(args):
     prof = _profile(args)
     if args.feed:
         prof.draw_feed = args.feed
-    stats = write_gcode(ordered, args.output + ".gcode", prof, paper_height=ph)
+    stats = write_gcode(ordered, args.output + ".gcode", prof, paper_height=ph, paper_width=pw)
     write_svg(ordered, args.output + ".svg", pw, ph, meta.get("pen_width_mm", 0.3))
     print(f"{len(ordered)} segments ({len(data['lines'])-len(segs)} degenerate dropped); "
           f"draw {stats['draw_mm']/1000:.1f} m, travel {stats['travel_mm']/1000:.1f} m, "

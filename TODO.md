@@ -207,7 +207,12 @@ Tests: `uv run --with pytest pytest -q tests` (19 tests).
       pen up `G0 Z3`, FluidNC `junction_deviation_mm: 0.05`, Z `acceleration_mm_per_sec2` 300 → 1000+,
       then raise `draw_feed` until lines get wobbly.
 - [ ] Pen wear: suggested `pause_every_mm` per pen type (a 0.1 mm fineliner won't do 200 m).
-- [ ] Bounds check: refuse moves outside the paper / machine area.
+- [x] Bounds check: G-code is refused (nothing written, clear error in CLI/UI) when any X/Y target,
+      including header/footer moves, falls outside 0..`machine_x_mm` × 0..`machine_y_mm` (320 × 380 from
+      FluidNC `max_travel_mm`) after flip/offsets, or a stroke leaves the paper. A3 doesn't fit; Legal
+      only in portrait.
+- [ ] Measure real `max_travel_mm` (config says "measure"), then set FluidNC `soft_limits: true` as a
+      second guard. Check that the work origin is the homed corner (the bounds check assumes it).
 
 ### P2: string art likeness and plot time
 - [ ] Join dashes along neighbouring lines into continuous dotted strokes, or order dashes along each
