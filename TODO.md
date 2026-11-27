@@ -215,8 +215,13 @@ Tests: `uv run --with pytest pytest -q tests` (19 tests).
       second guard. Check that the work origin is the homed corner (the bounds check assumes it).
 
 ### P2: string art likeness and plot time
-- [ ] Join dashes along neighbouring lines into continuous dotted strokes, or order dashes along each
-      chord, to cut the ~14k pen lifts.
+- [x] Dash pen lifts, investigated. **Finding:** joining or reordering dashes can't cut lifts (one per gap
+      by definition; travel is already ~0). On a real 13k-lift dashed job, pen moves were 133 of 224 min.
+      What helps: lift cost. Profile `dwell_s 0` + pen up Z3 + FluidNC Z accel 1500 → 131 min.
+      Added short hop (`hop_up`, e.g. `G0 Z2.5` for moves < `hop_max_mm`): small extra gain (Z time ~ √distance).
+      Tried a tone-preserving adaptive dash period (longer where duty is near 0 or 1): −12% dashes, but a
+      plain 12 mm period gives the same −13% at the same tone change, so not added. Fewer lifts = longer
+      `dash_period_mm` (the slider already exists).
 - [ ] Poincaré fringe: minimum arc span (or penalty) so short rim-hugging arcs don't pile up.
 - [ ] Refinement after greedy: try removing/swapping lines (local search / annealing), typically a large gain.
 - [ ] Importance mask (face/eyes weighted higher): UI brush or face detection; also for hatching/scribble.

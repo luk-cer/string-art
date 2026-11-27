@@ -28,6 +28,11 @@ import numpy as np
 class PlotterProfile:
     pen_up: str = "G0 Z5"           # command that lifts the pen
     pen_down: str = "G0 Z0"         # command that lowers the pen
+    # Short hop: for pen-up travel shorter than hop_max_mm, lift with hop_up instead of pen_up
+    # (a lower Z, so the lift is quicker). Dash gaps and scribble restarts are mostly short.
+    # Empty = always the full pen_up. The pen must still clear the paper at the hop height.
+    hop_up: str = ""
+    hop_max_mm: float = 10.0
     dwell_s: float = 0.05           # G4 pause after each pen move (0 = none)
     draw_feed: float = 1500.0       # mm/min for G1 drawing moves
     travel_feed: float | None = None  # mm/min for G0 travel (None = machine rapid)
@@ -342,10 +347,14 @@ def write_gcode(polylines, path, profile=None, paper_height=None, comment=None, 
     z_up, z_down = _z_of(p.pen_up), _z_of(p.pen_down)
     feed_now = None                          # F is modal: written only when it changes
 
+    z_now = [None]
+
     def pen(cmd):
         out.append(cmd)
-        if z_up is not None and z_down is not None:
-            events.append(("z", z_up - z_down))
+        z = _z_of(cmd)
+        if z is not None and z_up is not None and z_down is not None:
+            events.append(("z", (z - z_now[0]) if z_now[0] is not None else (z_up - z_down)))
+            z_now[0] = z
         else:
             events.append(("stop", p.pen_move_s))
         if p.dwell_s > 0:
@@ -367,7 +376,8 @@ def write_gcode(polylines, path, profile=None, paper_height=None, comment=None, 
             pl = round_corners(pl, p.corner_tol_mm)
         if pos is None or _dist(pos, pl[0]) > eps:
             if pen_is_down:
-                pen(p.pen_up)
+                hop = p.hop_up and _dist(pos, pl[0]) < p.hop_max_mm
+                pen(p.hop_up if hop else p.pen_up)
                 pen_is_down = False
             if pos is not None:
                 travel_mm += _dist(pos, pl[0])
@@ -406,7 +416,7 @@ def write_gcode(polylines, path, profile=None, paper_height=None, comment=None, 
     with open(path, "w") as f:
         f.write("\n".join(out) + "\n")
 
-    lifts = sum(1 for line in out if line == p.pen_up)
+    lifts = sum(1 for line in out if line == p.pen_up or (p.hop_up and line == p.hop_up))
     t = estimate_time(events, p)
     return {
         "draw_mm": draw_mm,

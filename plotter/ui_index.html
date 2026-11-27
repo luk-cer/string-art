@@ -316,6 +316,8 @@ const HELP = {
   offset_y: "Shift the whole drawing up (mm).",
   pause_every_mm: "Insert an M0 pause after this much drawing, to check or swap the pen. 0 = never.",
   pen_move_s: "Seconds per pen up or down, for the time estimate. Only used when the pen commands have no Z value (e.g. a servo on M3/M5).",
+  hop_up: "Lift command for short pen-up moves (e.g. G0 Z2.5): a lower lift is quicker. Empty = always the full pen-up. The pen must still clear the paper at this height.",
+  hop_max_mm: "Pen-up moves shorter than this use the short hop.",
   check_bounds: "Refuse to write G-code that would move outside the machine area or draw off the paper.",
   machine_x_mm: "Usable X travel of the machine (FluidNC max_travel_mm). G-code coordinates must stay within 0..this, after flip and offsets.",
   machine_y_mm: "Usable Y travel of the machine (FluidNC max_travel_mm).",
@@ -493,6 +495,8 @@ const STYLE_PARAMS = {
 const PROFILE = [
   {k:"pen_up", label:"Pen up", type:"text", v:"G0 Z5"},
   {k:"pen_down", label:"Pen down", type:"text", v:"G0 Z0"},
+  {k:"hop_up", label:"Short hop (empty = off)", type:"text", v:""},
+  {k:"hop_max_mm", label:"Short hop for moves under", unit:"mm", min:0, max:50, step:1, v:10},
   {k:"dwell_s", label:"Dwell after pen move", unit:"s", min:0, max:1, step:0.01, v:0.05},
   {k:"draw_feed", label:"Draw feed", unit:"mm/min", min:100, max:10000, step:100, v:1500},
   {k:"travel_feed", label:"Travel feed (0 = rapid)", unit:"mm/min", min:0, max:20000, step:500, v:0},

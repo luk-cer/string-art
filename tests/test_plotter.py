@@ -115,3 +115,15 @@ def test_bounds_check_refuses_and_writes_nothing(tmp_path):
         write_gcode([[(10, 10), (20, 10)]], out, PlotterProfile(footer=["G0 X500 Y0"]), paper_height=210)
     # check can be switched off (paper check still applies only when paper_width is given)
     write_gcode([[(10, 10), (400, 10)]], out, PlotterProfile(check_bounds=False), paper_height=297)
+
+
+def test_short_hop_for_short_travel(tmp_path):
+    out = tmp_path / "h.gcode"
+    pls = [[(10, 10), (20, 10)], [(22, 10), (30, 10)], [(100, 10), (110, 10)]]
+    st = write_gcode(pls, out, PlotterProfile(hop_up="G0 Z2", hop_max_mm=10, dwell_s=0), paper_height=210)
+    lines = out.read_text().splitlines()
+    assert lines.count("G0 Z2") == 1            # 2 mm gap: hop
+    assert lines.count("G0 Z5") == 3            # start, 70 mm travel, end
+    assert st["pen_lifts"] == 4
+    full = write_gcode(pls, out, PlotterProfile(dwell_s=0), paper_height=210)
+    assert st["pen_lift_minutes"] < full["pen_lift_minutes"]
