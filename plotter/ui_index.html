@@ -315,7 +315,14 @@ const HELP = {
   offset_x: "Shift the whole drawing right (mm).",
   offset_y: "Shift the whole drawing up (mm).",
   pause_every_mm: "Insert an M0 pause after this much drawing, to check or swap the pen. 0 = never.",
-  pen_move_s: "How long a pen up or down takes. Only used for the plot time estimate.",
+  pen_move_s: "Seconds per pen up or down, for the time estimate. Only used when the pen commands have no Z value (e.g. a servo on M3/M5).",
+  corner_tol_mm: "Round every corner of a stroke within this distance (mm), so the plotter doesn't have to brake at each joint. 0.05 is invisible with a 0.1-0.3 mm pen and saves 15-25% of drawing time; the G-code gets 2-3x more lines (fine from the SD card). 0 = off.",
+  accel_mm_s2: "X/Y acceleration from the FluidNC config (acceleration_mm_per_sec2). Only used for the plot time estimate.",
+  rapid_feed: "X/Y max rate from the FluidNC config (max_rate_mm_per_min), the speed of G0 moves. Only for the estimate.",
+  z_accel_mm_s2: "Z (pen lift) acceleration from the FluidNC config. Only for the estimate; raising it in the config makes pen lifts faster.",
+  z_rapid_feed: "Z max rate from the FluidNC config. Only for the estimate.",
+  junction_deviation_mm: "FluidNC junction_deviation_mm (default 0.01): how far the machine may round a corner. Bigger = faster through corners. 0.05 is invisible with a pen. Only for the estimate: change it in the FluidNC config.",
+  planner_blocks: "FluidNC planner_blocks (default 16): how many moves the controller plans ahead. Only for the estimate.",
 };
 const STYLE_PARAMS = {
   stringart: [
@@ -491,7 +498,14 @@ const PROFILE = [
   {k:"offset_x", label:"Offset X", unit:"mm", min:-200, max:200, step:1, v:0},
   {k:"offset_y", label:"Offset Y", unit:"mm", min:-200, max:200, step:1, v:0},
   {k:"pause_every_mm", label:"Pause (M0) every", unit:"mm", min:0, max:500000, step:1000, v:0},
-  {k:"pen_move_s", label:"Pen up/down time (estimate only)", unit:"s", min:0, max:1, step:0.05, v:0.15},
+  {k:"corner_tol_mm", label:"Round corners within", unit:"mm", min:0, max:0.2, step:0.01, v:0.05},
+  {k:"accel_mm_s2", label:"Machine: X/Y acceleration", unit:"mm/s²", min:100, max:10000, step:100, v:1500},
+  {k:"rapid_feed", label:"Machine: X/Y max rate", unit:"mm/min", min:1000, max:30000, step:500, v:10000},
+  {k:"z_accel_mm_s2", label:"Machine: Z acceleration", unit:"mm/s²", min:50, max:5000, step:50, v:300},
+  {k:"z_rapid_feed", label:"Machine: Z max rate", unit:"mm/min", min:100, max:10000, step:100, v:3000},
+  {k:"junction_deviation_mm", label:"Machine: junction deviation", unit:"mm", min:0.001, max:0.2, step:0.001, v:0.01},
+  {k:"planner_blocks", label:"Machine: planner blocks", min:4, max:128, step:1, v:16},
+  {k:"pen_move_s", label:"Pen move time (if no Z in pen commands)", unit:"s", min:0, max:1, step:0.05, v:0.15},
 ];
 const PROFILE_TEXT = {header:"G21\nG90", footer:"G0 X0 Y0"};
 
@@ -795,6 +809,8 @@ function showStats(){
   parts.push(`<span>ink <b>${(s.draw_mm/1000).toFixed(1)} m</b></span>`);
   parts.push(`<span>travel <b>${(s.travel_mm/1000).toFixed(1)} m</b></span>`);
   parts.push(`<span>plot time ≈ <b>${fmtMin(s.est_minutes)}</b></span>`);
+  if(s.draw_minutes != null)
+    parts.push(`<span title="Drawing time with braking at joints vs. everything at full feed; then pen up/down time">drawing <b>${fmtMin(s.draw_minutes)}</b> (full feed ${fmtMin(s.draw_ideal_minutes)}), pen moves <b>${fmtMin(s.pen_lift_minutes)}</b></span>`);
   parts.push(`<span style="color:var(--muted)">computed in ${s.seconds}s</span>`);
   parts.push(`<span class="dl"><a href="${f.gcode}" download>G-code</a><a href="${f.svg}" download>SVG</a><a href="${f.json}" download>JSON</a></span>`);
   $("stats").innerHTML = parts.join("");

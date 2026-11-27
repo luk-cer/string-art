@@ -40,6 +40,17 @@ G1 X.. Y.. F1500
       Sample radon file: pen-up travel 57.8 m → 0.7 m.
 - [x] SVG written next to every G-code file as a fallback.
 - [x] Plot-time estimate counts pen lifts (`pen_move_s`), which dominate for scribble styles.
+- [x] **Smooth joints** (`corner_tol_mm`, default 0.05): FluidNC already blends joints (junction
+      deviation), but traced strokes bend ~45° at the median joint, so the planner brakes at almost every
+      one. Each corner is now replaced by a short curve within 0.05 mm (invisible with a pen).
+      **Why not more:** one extra point per corner already halves each bend; more points mostly add
+      file size. Plot runs from SD, so 2-3x more lines is fine.
+- [x] Time estimate replays the firmware planner (trapezoids, junction deviation, 16-block look-ahead,
+      stop at every pen move); machine values in the profile, defaults from the FluidNC config. F is
+      written once (modal) instead of on every line.
+      Measured on a real 4400-lift scribble job: old estimate 115 min, planner says 149 min.
+      Same job with rounding + profile `dwell_s 0`, pen up `G0 Z3`, F3000 + FluidNC
+      `junction_deviation_mm: 0.05`, Z accel 1500: **64 min** (82 without rounding).
 
 ### 1.2 String art for pen (priority from the start)
 
@@ -191,7 +202,10 @@ Tests: `uv run --with pytest pytest -q tests` (19 tests).
 - [ ] **Plot one of each style on paper** and compare with the previews: line weight, pen bleed at
       crossings, whether dashes read as tone.
 - [ ] Verify profile: Y direction (`flip_y`), origin, Z values, dwell. Record the working profile in the repo.
-- [ ] Measure real pen-lift time and feed to make plot-time estimates honest (`pen_move_s`, `draw_feed`).
+- [ ] Time a real plot and compare with the estimate (it now models the planner; check it's honest).
+- [ ] Try on the machine, one at a time: `dwell_s 0` (stepper lift moves in order, no settle needed?),
+      pen up `G0 Z3`, FluidNC `junction_deviation_mm: 0.05`, Z `acceleration_mm_per_sec2` 300 → 1000+,
+      then raise `draw_feed` until lines get wobbly.
 - [ ] Pen wear: suggested `pause_every_mm` per pen type (a 0.1 mm fineliner won't do 200 m).
 - [ ] Bounds check: refuse moves outside the paper / machine area.
 

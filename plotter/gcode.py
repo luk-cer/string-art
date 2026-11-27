@@ -43,7 +43,20 @@ class PlotterProfile:
     # (0 = never). Uses M0, which GRBL treats as "program pause".
     pause_every_mm: float = 0.0
     pause_command: str = "M0"
-    # only for the time estimate: seconds one Z move takes (excluding dwell)
+    # Corner rounding: replace each joint of a stroke with a short curve that stays within
+    # this distance (mm) of the original corner, so the controller can take it without
+    # braking. 0 = off. 0.05 is invisible with a 0.1-0.3 mm pen.
+    corner_tol_mm: float = 0.05
+    # Machine, for the time estimate only (defaults = hardware/fluidnc/config_dlc32_extruh.yaml).
+    # The estimate replays the firmware planner: trapezoid speed profiles, junction deviation,
+    # limited look-ahead, full stop at every pen move and dwell.
+    accel_mm_s2: float = 1500.0
+    rapid_feed: float = 10000.0           # max_rate_mm_per_min of X/Y (G0 speed)
+    z_accel_mm_s2: float = 300.0
+    z_rapid_feed: float = 3000.0
+    junction_deviation_mm: float = 0.01   # FluidNC default
+    planner_blocks: int = 16              # FluidNC default
+    # fallback when the pen commands have no Z word (e.g. M3/M5 servo): seconds per pen move
     pen_move_s: float = 0.15
 
     @classmethod
@@ -145,6 +158,116 @@ def _order_kdtree(pls, start):
     return ordered
 
 
+def round_corners(pl, tol, step_deg=45.0, min_deg=8.0):
+    """Replace each interior joint with a quadratic Bezier whose legs are long enough
+    that the curve passes within `tol` of the corner (deviation = r*sin(phi/2)/2),
+    capped at half of each adjacent segment. A turn of phi gets ~phi/step_deg + 1 segments
+    (one extra point per corner = a chamfer already halves each bend; more points add
+    file size for little speed). Bends under min_deg are left alone: the controller
+    takes them at full speed anyway."""
+    if tol <= 0 or len(pl) < 3:
+        return pl
+    out = [tuple(pl[0])]
+    for i in range(1, len(pl) - 1):
+        (ax, ay), (bx, by), (cx, cy) = pl[i - 1], pl[i], pl[i + 1]
+        ux, uy, wx, wy = bx - ax, by - ay, cx - bx, cy - by
+        lu, lw = math.hypot(ux, uy), math.hypot(wx, wy)
+        if lu < 1e-9 or lw < 1e-9:
+            continue
+        cphi = (ux * wx + uy * wy) / (lu * lw)
+        phi = math.acos(max(-1.0, min(1.0, cphi)))
+        s2 = math.sin(phi / 2)
+        r = min(0.5 * lu, 0.5 * lw, 2 * tol / s2) if s2 > 1e-6 else 0.0
+        if phi < math.radians(min_deg) or r < 1e-3:
+            out.append((bx, by))
+            continue
+        p0 = (bx - ux / lu * r, by - uy / lu * r)
+        p2 = (bx + wx / lw * r, by + wy / lw * r)
+        n = int(math.degrees(phi) / step_deg) + 1
+        for k in range(n + 1):
+            t = k / n
+            a, b, c = (1 - t) ** 2, 2 * (1 - t) * t, t * t
+            out.append((a * p0[0] + b * bx + c * p2[0], a * p0[1] + b * by + c * p2[1]))
+    out.append(tuple(pl[-1]))
+    return out
+
+
+def _z_of(cmd):
+    import re
+    m = re.search(r"Z\s*(-?[\d.]+)", cmd or "")
+    return float(m.group(1)) if m else None
+
+
+def estimate_time(events, p):
+    """Plot time (s) from motion events, replaying a GRBL/FluidNC-style planner.
+    events: ("xy", dx, dy, feed_mm_min or None for rapid) | ("stop", seconds) | ("z", dz_mm).
+    Returns seconds: total, draw, ideal_draw (all drawing at full feed), travel, pen."""
+    res = dict(total=0.0, draw=0.0, ideal_draw=0.0, travel=0.0, pen=0.0)
+    run = []
+    a = p.accel_mm_s2
+    jd = p.junction_deviation_mm
+    k = max(1, int(p.planner_blocks) - 1)
+
+    def flush():
+        if not run:
+            return
+        n = len(run)
+        L = [b[0] for b in run]
+        V = [b[1] for b in run]
+        vj = [0.0] * (n + 1)
+        for i in range(1, n):
+            # GRBL junction speed; c = cos of the angle between reversed previous and next direction
+            c = -(run[i - 1][2] * run[i][2] + run[i - 1][3] * run[i][3])
+            s2 = math.sqrt(max(0.0, 0.5 * (1 - c)))
+            if s2 >= 0.999999:
+                vj[i] = min(V[i - 1], V[i])
+            elif s2 > 1e-6:
+                vj[i] = min(V[i - 1], V[i], math.sqrt(a * jd * s2 / (1 - s2)))
+        # limited look-ahead: must be able to stop within the next planner_blocks blocks
+        cum = [0.0]
+        for d in L:
+            cum.append(cum[-1] + d)
+        for i in range(1, n):
+            vj[i] = min(vj[i], math.sqrt(2 * a * (cum[min(n, i + k)] - cum[i])))
+        for i in range(n - 1, -1, -1):
+            vj[i] = min(vj[i], math.sqrt(vj[i + 1] ** 2 + 2 * a * L[i]))
+        for i in range(n):
+            vj[i + 1] = min(vj[i + 1], math.sqrt(vj[i] ** 2 + 2 * a * L[i]))
+        for i in range(n):
+            v0, v1, vm, d = vj[i], vj[i + 1], V[i], L[i]
+            vp = math.sqrt((2 * a * d + v0 * v0 + v1 * v1) / 2)
+            if vp < vm:
+                dt = (2 * vp - v0 - v1) / a
+            else:
+                da, dd = (vm * vm - v0 * v0) / (2 * a), (vm * vm - v1 * v1) / (2 * a)
+                dt = (2 * vm - v0 - v1) / a + (d - da - dd) / vm
+            res["travel" if run[i][4] else "draw"] += dt
+            res["total"] += dt
+        run.clear()
+
+    for e in events:
+        if e[0] == "xy":
+            _, dx, dy, feed = e
+            d = math.hypot(dx, dy)
+            if d < 1e-9:
+                continue
+            v = (feed if feed else p.rapid_feed) / 60.0
+            if feed:
+                res["ideal_draw"] += d / v
+            run.append((d, v, dx / d, dy / d, feed is None))
+        else:
+            flush()
+            if e[0] == "stop":
+                dt = e[1]
+            else:
+                d, vm, az = abs(e[1]), p.z_rapid_feed / 60.0, p.z_accel_mm_s2
+                dt = 2 * math.sqrt(d / az) if d < vm * vm / az else d / vm + vm / az
+            res["pen"] += dt
+            res["total"] += dt
+    flush()
+    return res
+
+
 def write_gcode(polylines, path, profile=None, paper_height=None, comment=None):
     """Write polylines (lists of (x, y) in mm, y-down) as plotter G-code.
 
@@ -168,10 +291,19 @@ def write_gcode(polylines, path, profile=None, paper_height=None, comment=None):
         out += [f"; {line}" for line in comment.splitlines()]
     out += list(p.header)
 
+    events = []
+    z_up, z_down = _z_of(p.pen_up), _z_of(p.pen_down)
+    feed_now = None                          # F is modal: written only when it changes
+
     def pen(cmd):
         out.append(cmd)
+        if z_up is not None and z_down is not None:
+            events.append(("z", z_up - z_down))
+        else:
+            events.append(("stop", p.pen_move_s))
         if p.dwell_s > 0:
             out.append(f"G4 P{p.dwell_s:g}")
+            events.append(("stop", p.dwell_s))
 
     pen(p.pen_up)
     pen_is_down = False
@@ -184,13 +316,18 @@ def write_gcode(polylines, path, profile=None, paper_height=None, comment=None):
     for pl in polylines:
         if len(pl) < 2:
             continue
+        if p.corner_tol_mm > 0:
+            pl = round_corners(pl, p.corner_tol_mm)
         if pos is None or _dist(pos, pl[0]) > eps:
             if pen_is_down:
                 pen(p.pen_up)
                 pen_is_down = False
             if pos is not None:
                 travel_mm += _dist(pos, pl[0])
+                events.append(("xy", pl[0][0] - pos[0], pl[0][1] - pos[1], None))
             out.append(f"G0 {xy(pl[0])}{travel_f}")
+            if p.travel_feed:
+                feed_now = p.travel_feed
         if not pen_is_down:
             pen(p.pen_down)
             pen_is_down = True
@@ -198,7 +335,12 @@ def write_gcode(polylines, path, profile=None, paper_height=None, comment=None):
             seg = _dist(a, b)
             if seg <= eps:
                 continue
-            out.append(f"G1 {xy(b)} F{p.draw_feed:g}")
+            if feed_now != p.draw_feed:
+                out.append(f"G1 {xy(b)} F{p.draw_feed:g}")
+                feed_now = p.draw_feed
+            else:
+                out.append(f"G1 {xy(b)}")
+            events.append(("xy", b[0] - a[0], b[1] - a[1], p.draw_feed))
             draw_mm += seg
             since_pause += seg
             if p.pause_every_mm and since_pause >= p.pause_every_mm:
@@ -216,14 +358,17 @@ def write_gcode(polylines, path, profile=None, paper_height=None, comment=None):
         f.write("\n".join(out) + "\n")
 
     lifts = sum(1 for line in out if line == p.pen_up)
-    lift_min = lifts * 2 * (p.pen_move_s + p.dwell_s) / 60.0
-    est_min = draw_mm / p.draw_feed + travel_mm / (p.travel_feed or 3000.0) + lift_min
+    t = estimate_time(events, p)
     return {
         "draw_mm": draw_mm,
         "travel_mm": travel_mm,
         "pen_lifts": lifts,
-        "pen_lift_minutes": lift_min,
-        "est_minutes": est_min,
+        "pen_lift_minutes": t["pen"] / 60.0,   # pen moves + dwells
+        "est_minutes": t["total"] / 60.0,
+        # drawing time with the planner vs. if every segment ran at full feed:
+        # the difference is time lost braking at joints
+        "draw_minutes": t["draw"] / 60.0,
+        "draw_ideal_minutes": t["ideal_draw"] / 60.0,
         "gcode_lines": len(out),
     }
 

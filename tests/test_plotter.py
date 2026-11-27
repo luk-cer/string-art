@@ -62,3 +62,32 @@ def test_ui_backend_render(tmp_path):
         assert r["polylines"] and r["stats"]["draw_mm"] > 0
         g = app.job_file(r["job"], "plot.gcode").read_text()
         assert "F2000" in g
+
+
+def test_gcode_modal_feed_and_corner_rounding(tmp_path):
+    from plotter.gcode import round_corners
+    zig = [(i * 1.0, (i % 2) * 1.0) for i in range(20)]          # 90 deg corners
+    r = round_corners(zig, 0.05)
+    a, q = np.asarray(zig), np.asarray(r)
+    # every rounded point stays within tol of the original path
+    A, B = a[:-1], a[1:]
+    AB = B - A
+    t = np.clip(((q[:, None] - A) * AB).sum(-1) / (AB * AB).sum(-1), 0, 1)
+    d = np.hypot(*(q[:, None] - (A + t[..., None] * AB)).transpose(2, 0, 1)).min(1)
+    assert d.max() <= 0.05 + 1e-9
+    assert r[0] == zig[0] and r[-1] == zig[-1]
+    out = tmp_path / "z.gcode"
+    st_round = write_gcode([zig], out, PlotterProfile(flip_y=False, draw_feed=6000))
+    g1 = [l for l in out.read_text().splitlines() if l.startswith("G1")]
+    assert sum("F" in l for l in g1) == 1                          # F written once (modal)
+    st_sharp = write_gcode([zig], out, PlotterProfile(flip_y=False, draw_feed=6000, corner_tol_mm=0))
+    assert st_round["draw_minutes"] < st_sharp["draw_minutes"]     # less braking at corners
+    assert st_sharp["draw_minutes"] > st_sharp["draw_ideal_minutes"]
+
+
+def test_time_estimate_straight_line():
+    from plotter.gcode import estimate_time
+    p = PlotterProfile(accel_mm_s2=1000)
+    # 100 mm at 60 mm/s, accel 1000: 100/60 + 60/1000
+    t = estimate_time([("xy", 100.0, 0.0, 3600.0)], p)
+    assert math.isclose(t["total"], 100 / 60 + 60 / 1000, rel_tol=1e-6)
