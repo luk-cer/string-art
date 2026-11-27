@@ -179,6 +179,11 @@ may cross itself; "pen held and squiggling" with momentum and random perturbatio
 - [x] Classic radon removed from the UI: on photos it produced chords with no likeness. Code kept for
       `main.py` and `lines2gcode`.
 - [x] Compare page (published artifact "Plotter Style Evolution"): all styles on one portrait with stats.
+- [x] **Sheet layout** (`/layout`, linked from the preview): load several G-codes (files, or recent renders
+      with thumbnails), drag to move, corner to resize (aspect locked), rotate 90°, centre, fit, duplicate;
+      snapping to paper edges/margin/centre and other drawings; off-paper/overlap warnings. "Make G-code"
+      combines them in list order through the normal writer (profile from the preview page, bounds check,
+      planner estimate). Parser reads our files and svg2gcode-style ones (G2/G3 arcs, M3/M5 servo pens).
 
 ---
 
@@ -243,6 +248,8 @@ Tests: `uv run --with pytest pytest -q tests` (19 tests).
 
 ### P5: UI and project hygiene
 - [ ] Progress bar / cancel for long renders; load and preview an existing `.gcode`.
+- [ ] Layout: keep uploaded G-codes across server restarts (now only renders are restored); free rotation;
+      optimise stroke order across drawings.
 - [ ] A/B compare inside the UI (the compare page does this for fixed renders).
 - [ ] Move the compare page and its renders into `docs/` if it should live in the repo.
 - [ ] `pyproject.toml`: description, declare `scipy`/`matplotlib`, relax the Python 3.14 pin.

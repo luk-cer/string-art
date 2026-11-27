@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plotter sheet layout</title>
+<style>
+:root{
+  --bg:#f4f3f0; --panel:#ffffff; --ink:#1d1d1f; --muted:#6b6b70; --line:#e2e0db;
+  --accent:#2f5bd3; --accent-ink:#fff; --paper:#ffffff; --desk:#d9d6cf; --danger:#b3261e;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#17181a; --panel:#202124; --ink:#ececec; --muted:#9a9aa0; --line:#34353a;
+         --accent:#7d9cff; --accent-ink:#0f1115; --desk:#0f1012; --danger:#ff8a80; }
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  display:grid;grid-template-columns:340px 1fr;grid-template-rows:100%}
+aside{background:var(--panel);border-right:1px solid var(--line);overflow-y:auto;padding:14px 16px 40px}
+h1{font-size:15px;margin:0 0 4px;letter-spacing:.2px}
+h1 + a{font-size:12px;color:var(--accent);text-decoration:none}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:18px 0 8px;font-weight:600}
+.drop{border:1.5px dashed var(--line);border-radius:10px;padding:14px;text-align:center;color:var(--muted);cursor:pointer}
+.drop.over{border-color:var(--accent);color:var(--accent)}
+.seg{display:grid;grid-auto-flow:column;gap:4px;background:var(--bg);padding:3px;border-radius:9px}
+.seg button{border:0;background:transparent;color:var(--ink);padding:6px 4px;border-radius:7px;cursor:pointer;font:inherit}
+.seg button.on{background:var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.15);font-weight:600}
+.row{display:grid;grid-template-columns:1fr 110px;gap:8px;align-items:center;margin:6px 0}
+.row label{font-size:13px}
+.row input,.row select{width:100%;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:inherit}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:6px 10px}
+.grid2 label{font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:2px}
+.grid2 input{width:100%;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:inherit}
+.btn{border:0;border-radius:8px;padding:8px 12px;font:inherit;font-weight:600;cursor:pointer;background:var(--accent);color:var(--accent-ink)}
+.btn:disabled{opacity:.5;cursor:default}
+.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);font-weight:500}
+.btn.small{padding:4px 8px;font-size:12px}
+.btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.list{display:flex;flex-direction:column;gap:6px}
+.job{display:grid;grid-template-columns:54px 1fr auto;gap:8px;align-items:center;border:1px solid var(--line);border-radius:8px;padding:5px;cursor:pointer}
+.job:hover{border-color:var(--accent)}
+.job img{width:54px;height:40px;object-fit:contain;background:#fff;border-radius:4px}
+.job small{color:var(--muted);display:block}
+.item{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:8px;padding:6px 8px;cursor:pointer}
+.item.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.item .bad{color:var(--danger);font-size:12px}
+.item span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hint{font-size:12px;color:var(--muted);margin-top:4px}
+main{display:grid;grid-template-rows:1fr auto;min-width:0}
+#stage{position:relative;overflow:hidden;background:var(--desk)}
+#view{position:absolute;inset:0;width:100%;height:100%}
+.stats{display:flex;flex-wrap:wrap;gap:6px 18px;padding:8px 14px;border-top:1px solid var(--line);background:var(--panel);font-size:13px;align-items:center;min-height:46px}
+.stats b{font-variant-numeric:tabular-nums}
+.stats a{color:var(--accent);text-decoration:none;border:1px solid var(--line);padding:4px 10px;border-radius:6px}
+.err{color:var(--danger);white-space:pre-wrap}
+.empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);pointer-events:none;text-align:center;padding:20px}
+</style>
+</head>
+<body>
+<aside>
+  <h1>Sheet layout</h1>
+  <a href="/">← back to preview</a>
+
+  <h2>Paper</h2>
+  <div class="row"><label>Size</label><select id="paperSize"></select></div>
+  <div class="seg" id="orient"><button data-o="portrait">Portrait</button><button data-o="landscape">Landscape</button></div>
+  <div class="row"><label>Pen width (preview)</label><input type="number" id="penMm" min="0.05" max="2" step="0.05"></div>
+  <div class="row"><label>Margin (snap, fit)</label><input type="number" id="margin" min="0" max="60" step="1"></div>
+
+  <h2>Add drawings</h2>
+  <div class="drop" id="drop">Drop .gcode files here or <u>choose files</u>
+    <input type="file" id="file" accept=".gcode,.nc,.ngc,.txt" multiple hidden>
+  </div>
+  <details style="margin-top:10px" open>
+    <summary style="cursor:pointer;font-size:13px">Recent renders</summary>
+    <div class="list" id="jobs" style="margin-top:8px"></div>
+  </details>
+
+  <h2>On the sheet</h2>
+  <div class="list" id="items"></div>
+  <div id="sel" style="display:none;margin-top:10px">
+    <div class="grid2">
+      <label>X (mm)<input type="number" id="fx" step="1"></label>
+      <label>Y (mm)<input type="number" id="fy" step="1"></label>
+      <label>Width (mm)<input type="number" id="fw" step="1" min="1"></label>
+      <label>Height (mm)<input type="number" id="fh" step="1" min="1"></label>
+      <label>Scale (%)<input type="number" id="fs" step="1" min="1"></label>
+      <label>Rotation<input type="text" id="fr" readonly></label>
+    </div>
+    <div class="btns">
+      <button class="btn ghost small" id="rotBtn">Rotate 90°</button>
+      <button class="btn ghost small" id="cHBtn">Centre ↔</button>
+      <button class="btn ghost small" id="cVBtn">Centre ↕</button>
+      <button class="btn ghost small" id="fitBtn">Fit to page</button>
+      <button class="btn ghost small" id="dupBtn">Duplicate</button>
+      <button class="btn ghost small" id="delBtn" style="color:var(--danger)">Remove</button>
+    </div>
+    <div class="hint">Drag to move, drag the corner square to resize. Arrow keys nudge 1 mm (Shift: 10 mm). Alt while dragging: no snapping.
+      Scaling changes line density, so the tone gets lighter or darker; the pen width stays the same.</div>
+  </div>
+  <h2>Plot</h2>
+  <div class="hint">Drawings are plotted in list order, each in its own stroke order. Uses the plotter profile from the preview page.</div>
+  <div class="btns"><button class="btn" id="exportBtn" disabled>Make G-code</button></div>
+</aside>
+<main>
+  <div id="stage"><canvas id="view"></canvas><div class="empty" id="empty">Add G-code files or recent renders, then place them on the sheet.</div></div>
+  <div class="stats" id="stats"></div>
+</main>
+<script>
+const PAPERS = {A3:[297,420], A4:[210,297], A5:[148,210], A6:[105,148], Letter:[216,279], Legal:[216,356]};
+const $ = id => document.getElementById(id);
+const store = {
+  get(k, d){ try{ const v = localStorage.getItem("plotterlayout."+k); return v ? JSON.parse(v) : d; }catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem("plotterlayout."+k, JSON.stringify(v)); }catch(e){} },
+};
+const L = {
+  paper: store.get("paper", "A4"), orient: store.get("orient", "portrait"),
+  pen: store.get("pen", 0.3), margin: store.get("margin", 10),
+  items: [], sel: -1,
+};
+function paperWH(){ const [a,b] = PAPERS[L.paper]; return L.orient === "portrait" ? [a,b] : [b,a]; }
+function persist(){
+  store.set("paper", L.paper); store.set("orient", L.orient); store.set("pen", L.pen); store.set("margin", L.margin);
+  // only items that came from renders can be restored (uploaded files live in server memory only)
+  store.set("items", L.items.filter(it => it.job).map(it => ({job:it.job, name:it.name, x:it.x, y:it.y, scale:it.scale, rot:it.rot})));
+}
+
+// ---------------------------------------------------------------- items
+// item: {id, job?, name, w, h (unscaled, unrotated mm), polylines (flat), x, y, scale, rot, cache}
+function dims(it){ const r = it.rot % 180 !== 0; return [(r ? it.h : it.w) * it.scale, (r ? it.w : it.h) * it.scale]; }
+function bad(it){
+  const [W,H] = paperWH(), [w,h] = dims(it), e = 0.01;
+  return it.x < -e || it.y < -e || it.x + w > W + e || it.y + h > H + e;
+}
+function overlaps(i){
+  const a = L.items[i], [aw,ah] = dims(a);
+  return L.items.some((b, j) => { if(j === i) return false; const [bw,bh] = dims(b);
+    return a.x < b.x + bw && b.x < a.x + aw && a.y < b.y + bh && b.y < a.y + ah; });
+}
+async function loadSource(body){
+  const r = await fetch("/api/layout/load", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  const j = await r.json(); if(!r.ok) throw new Error(j.error);
+  return j;
+}
+function addItem(src, place){
+  const [W,H] = paperWH(), m = L.margin;
+  const it = {id:src.id, job:place.job, name:src.name, w:src.w, h:src.h, polylines:src.polylines,
+              x:place.x ?? m, y:place.y ?? m, scale:place.scale ?? 1, rot:place.rot ?? 0, cache:null};
+  if(place.scale == null){            // new: shrink to fit the printable area if needed, keep 1:1 otherwise
+    const [w,h] = dims(it), s = Math.min(1, (W - 2*m) / w, (H - 2*m) / h);
+    it.scale = s > 0 ? s : 1;
+    const [w2,h2] = dims(it); it.x = (W - w2) / 2; it.y = (H - h2) / 2;
+  }
+  L.items.push(it); L.sel = L.items.length - 1;
+  persist(); refresh();
+}
+async function addJob(job, name){
+  setStats(`<span>loading ${name}…</span>`);
+  try{ addItem(await loadSource({job, name}), {job}); setStats(""); }
+  catch(e){ setStats(`<span class="err">Could not load ${name}: ${e.message}</span>`); }
+}
+async function addFiles(files){
+  for(const f of files){
+    setStats(`<span>loading ${f.name}…</span>`);
+    try{ addItem(await loadSource({gcode: await f.text(), name: f.name}), {}); setStats(""); }
+    catch(e){ setStats(`<span class="err">Could not load ${f.name}: ${e.message}</span>`); return; }
+  }
+}
+
+// ---------------------------------------------------------------- side panel
+function buildPaper(){
+  $("paperSize").innerHTML = Object.keys(PAPERS).map(k => `<option ${k===L.paper?"selected":""}>${k}</option>`).join("");
+  $("paperSize").onchange = e => { L.paper = e.target.value; persist(); refresh(); };
+  document.querySelectorAll("#orient button").forEach(b => {
+    b.classList.toggle("on", b.dataset.o === L.orient);
+    b.onclick = () => { L.orient = b.dataset.o; buildPaper(); persist(); refresh(); };
+  });
+  $("penMm").value = L.pen; $("penMm").onchange = e => { L.pen = +e.target.value || 0.3; L.items.forEach(i => i.cache = null); persist(); draw(); };
+  $("margin").value = L.margin; $("margin").onchange = e => { L.margin = Math.max(0, +e.target.value || 0); persist(); };
+}
+async function buildJobs(){
+  try{
+    const jobs = await (await fetch("/api/jobs")).json();
+    $("jobs").innerHTML = jobs.length ? "" : `<div class="hint">No renders yet.</div>`;
+    for(const j of jobs){
+      const d = document.createElement("div"); d.className = "job";
+      const t = new Date(j.time * 1000);
+      d.innerHTML = `<img loading="lazy" src="${j.svg}" alt=""><div>${j.label}<small>${t.toLocaleDateString()} ${t.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"})}${j.minutes ? " · " + Math.round(j.minutes) + " min" : ""}</small></div><button class="btn ghost small">Add</button>`;
+      d.onclick = () => addJob(j.job, j.label);
+      $("jobs").appendChild(d);
+    }
+  }catch(e){ $("jobs").innerHTML = `<div class="err">${e.message}</div>`; }
+}
+function buildItems(){
+  $("items").innerHTML = L.items.length ? "" : `<div class="hint">Nothing yet.</div>`;
+  L.items.forEach((it, i) => {
+    const d = document.createElement("div"); d.className = "item" + (i === L.sel ? " on" : "");
+    const [w,h] = dims(it);
+    const warn = bad(it) ? `<span class="bad">off paper</span>` : overlaps(i) ? `<span class="bad">overlaps</span>` : "";
+    d.innerHTML = `<span title="${it.name}">${i+1}. ${it.name}</span><small>${w.toFixed(0)}×${h.toFixed(0)}</small>${warn}
+      <button class="btn ghost small" data-a="up" title="Plot earlier">↑</button>`;
+    d.onclick = e => {
+      if(e.target.dataset.a === "up" && i > 0){ [L.items[i-1], L.items[i]] = [L.items[i], L.items[i-1]]; L.sel = i - 1; persist(); }
+      else L.sel = i;
+      refresh();
+    };
+    $("items").appendChild(d);
+  });
+  const it = L.items[L.sel];
+  $("sel").style.display = it ? "" : "none";
+  if(it){
+    const [w,h] = dims(it);
+    $("fx").value = +it.x.toFixed(1); $("fy").value = +it.y.toFixed(1);
+    $("fw").value = +w.toFixed(1); $("fh").value = +h.toFixed(1);
+    $("fs").value = +(it.scale * 100).toFixed(1); $("fr").value = it.rot + "°";
+  }
+  $("exportBtn").disabled = !L.items.length;
+  $("empty").style.display = L.items.length ? "none" : "";
+}
+function cur(){ return L.items[L.sel]; }
+function setScale(it, s){ it.scale = Math.max(0.01, s); it.cache = null; }
+$("fx").onchange = e => { cur().x = +e.target.value; persist(); refresh(); };
+$("fy").onchange = e => { cur().y = +e.target.value; persist(); refresh(); };
+$("fw").onchange = e => { const it = cur(), [w] = dims(it); setScale(it, it.scale * (+e.target.value) / w); persist(); refresh(); };
+$("fh").onchange = e => { const it = cur(), [,h] = dims(it); setScale(it, it.scale * (+e.target.value) / h); persist(); refresh(); };
+$("fs").onchange = e => { setScale(cur(), +e.target.value / 100); persist(); refresh(); };
+$("rotBtn").onclick = () => { const it = cur(), [w,h] = dims(it), cx = it.x + w/2, cy = it.y + h/2;
+  it.rot = (it.rot + 90) % 360; it.cache = null; const [w2,h2] = dims(it); it.x = cx - w2/2; it.y = cy - h2/2; persist(); refresh(); };
+$("cHBtn").onclick = () => { const it = cur(), [w] = dims(it); it.x = (paperWH()[0] - w) / 2; persist(); refresh(); };
+$("cVBtn").onclick = () => { const it = cur(), [,h] = dims(it); it.y = (paperWH()[1] - h) / 2; persist(); refresh(); };
+$("fitBtn").onclick = () => { const it = cur(), [W,H] = paperWH(), m = L.margin, [w,h] = dims(it);
+  setScale(it, it.scale * Math.min((W - 2*m) / w, (H - 2*m) / h)); const [w2,h2] = dims(it);
+  it.x = (W - w2) / 2; it.y = (H - h2) / 2; persist(); refresh(); };
+$("dupBtn").onclick = () => { const it = cur(); L.items.push({...it, x: it.x + 10, y: it.y + 10, cache:null}); L.sel = L.items.length - 1; persist(); refresh(); };
+$("delBtn").onclick = () => { L.items.splice(L.sel, 1); L.sel = Math.min(L.sel, L.items.length - 1); persist(); refresh(); };
+
+const drop = $("drop");
+drop.onclick = () => $("file").click();
+$("file").onchange = e => { addFiles([...e.target.files]); e.target.value = ""; };
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); addFiles([...e.dataTransfer.files]); };
+
+// ---------------------------------------------------------------- canvas
+const view = $("view"), vx = view.getContext("2d");
+let cam = {k:1, ox:0, oy:0};          // screen px = mm * k + o
+function fitCam(){
+  const r = view.getBoundingClientRect(), [W,H] = paperWH(), pad = 30;
+  cam.k = Math.min((r.width - 2*pad) / W, (r.height - 2*pad) / H);
+  cam.ox = (r.width - W * cam.k) / 2; cam.oy = (r.height - H * cam.k) / 2;
+}
+function itemBitmap(it){
+  // cached drawing at the current zoom; rebuilt when zoom/scale/rotation/pen change
+  const key = [cam.k, it.scale, it.rot, L.pen].join("|");
+  if(it.cache && it.cache.key === key) return it.cache.c;
+  const dpr = window.devicePixelRatio || 1, [w,h] = dims(it), k = cam.k * dpr;
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.ceil(w * k)); c.height = Math.max(1, Math.ceil(h * k));
+  const g = c.getContext("2d");
+  g.lineCap = g.lineJoin = "round"; g.strokeStyle = "#111";
+  g.lineWidth = Math.max(0.6, L.pen * k);
+  const s = it.scale * k, W0 = it.w, H0 = it.h;
+  g.save();
+  // local (u, v) -> rotated clockwise -> scaled
+  if(it.rot === 90) g.setTransform(0, s, -s, 0, H0 * s, 0);
+  else if(it.rot === 180) g.setTransform(-s, 0, 0, -s, W0 * s, H0 * s);
+  else if(it.rot === 270) g.setTransform(0, -s, s, 0, 0, W0 * s);
+  else g.setTransform(s, 0, 0, s, 0, 0);
+  g.lineWidth = Math.max(0.6, L.pen * k) / s;
+  g.beginPath();
+  for(const pl of it.polylines){
+    g.moveTo(pl[0], pl[1]);
+    for(let i = 2; i < pl.length; i += 2) g.lineTo(pl[i], pl[i+1]);
+  }
+  g.stroke(); g.restore();
+  it.cache = {key, c};
+  return c;
+}
+function draw(){
+  const dpr = window.devicePixelRatio || 1, r = view.getBoundingClientRect();
+  if(view.width !== Math.round(r.width * dpr) || view.height !== Math.round(r.height * dpr)){
+    view.width = Math.round(r.width * dpr); view.height = Math.round(r.height * dpr);
+  }
+  fitCam();
+  vx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  vx.clearRect(0, 0, r.width, r.height);
+  const [W,H] = paperWH(), X = v => cam.ox + v * cam.k, Y = v => cam.oy + v * cam.k;
+  vx.fillStyle = "#fff"; vx.shadowColor = "rgba(0,0,0,.25)"; vx.shadowBlur = 12;
+  vx.fillRect(X(0), Y(0), W * cam.k, H * cam.k); vx.shadowBlur = 0;
+  if(L.margin > 0){
+    vx.setLineDash([4, 4]); vx.strokeStyle = "rgba(47,91,211,.35)"; vx.lineWidth = 1;
+    vx.strokeRect(X(L.margin), Y(L.margin), (W - 2*L.margin) * cam.k, (H - 2*L.margin) * cam.k); vx.setLineDash([]);
+  }
+  L.items.forEach((it, i) => {
+    const [w,h] = dims(it), bm = itemBitmap(it);
+    vx.drawImage(bm, X(it.x), Y(it.y), w * cam.k, h * cam.k);
+    const warn = bad(it) || overlaps(i);
+    if(i === L.sel || warn){
+      vx.strokeStyle = warn ? "#d93025" : "#2f5bd3"; vx.lineWidth = i === L.sel ? 1.5 : 1;
+      vx.strokeRect(X(it.x), Y(it.y), w * cam.k, h * cam.k);
+    }
+    if(i === L.sel){
+      vx.fillStyle = "#2f5bd3";
+      vx.fillRect(X(it.x + w) - 6, Y(it.y + h) - 6, 12, 12);
+    }
+  });
+  if(snapLines.length){
+    vx.strokeStyle = "#e0452b"; vx.lineWidth = 1; vx.setLineDash([3, 3]);
+    for(const [ax, v] of snapLines){
+      vx.beginPath();
+      if(ax === "x"){ vx.moveTo(X(v), Y(0)); vx.lineTo(X(v), Y(H)); } else { vx.moveTo(X(0), Y(v)); vx.lineTo(X(W), Y(v)); }
+      vx.stroke();
+    }
+    vx.setLineDash([]);
+  }
+}
+function refresh(){ buildItems(); draw(); }
+window.addEventListener("resize", draw);
+
+// drag / resize / snap
+let drag = null, snapLines = [];
+function mm(e){ const r = view.getBoundingClientRect(); return [(e.clientX - r.left - cam.ox) / cam.k, (e.clientY - r.top - cam.oy) / cam.k]; }
+function snap(v, size, ax, guides){
+  // snap the item's start, centre or end to a guide within 6 screen px
+  const tol = 6 / cam.k; let best = null;
+  for(const g of guides) for(const [off, w] of [[0, 0], [size / 2, 0], [size, 0]]){
+    const d = g - (v + off);
+    if(Math.abs(d) < tol && (!best || Math.abs(d) < Math.abs(best.d))) best = {d, g};
+  }
+  if(best){ snapLines.push([ax, best.g]); return v + best.d; }
+  return v;
+}
+view.addEventListener("pointerdown", e => {
+  const [x, y] = mm(e), s = cur();
+  if(s){
+    const [w,h] = dims(s), hk = 8 / cam.k;
+    if(Math.abs(x - (s.x + w)) < hk && Math.abs(y - (s.y + h)) < hk){
+      drag = {mode:"resize", it:s, x0:s.x, y0:s.y, w0:w, h0:h, s0:s.scale}; view.setPointerCapture(e.pointerId); return;
+    }
+  }
+  for(let i = L.items.length - 1; i >= 0; i--){
+    const it = L.items[i], [w,h] = dims(it);
+    if(x >= it.x && x <= it.x + w && y >= it.y && y <= it.y + h){
+      L.sel = i; drag = {mode:"move", it, dx: x - it.x, dy: y - it.y};
+      view.setPointerCapture(e.pointerId); refresh(); return;
+    }
+  }
+  L.sel = -1; refresh();
+});
+view.addEventListener("pointermove", e => {
+  const [x, y] = mm(e), s = cur();
+  if(!drag){
+    let c = "default";
+    if(s){ const [w,h] = dims(s), hk = 8 / cam.k;
+      if(Math.abs(x - (s.x + w)) < hk && Math.abs(y - (s.y + h)) < hk) c = "nwse-resize"; }
+    if(c === "default" && L.items.some(it => { const [w,h] = dims(it); return x >= it.x && x <= it.x + w && y >= it.y && y <= it.y + h; })) c = "move";
+    view.style.cursor = c; return;
+  }
+  const [W,H] = paperWH(), m = L.margin;
+  snapLines = [];
+  const it = drag.it;
+  if(drag.mode === "move"){
+    const [w,h] = dims(it);
+    let nx = x - drag.dx, ny = y - drag.dy;
+    if(!e.altKey){
+      const gx = [0, m, W/2, W - m, W], gy = [0, m, H/2, H - m, H];
+      for(const o of L.items) if(o !== it){ const [ow,oh] = dims(o); gx.push(o.x, o.x + ow); gy.push(o.y, o.y + oh); }
+      nx = snap(nx, w, "x", gx); ny = snap(ny, h, "y", gy);
+    }
+    it.x = nx; it.y = ny;
+  } else {
+    // keep aspect: scale by the larger relative change, anchored at the top-left
+    const f = Math.max((x - drag.x0) / drag.w0, (y - drag.y0) / drag.h0, 0.02);
+    it.scale = drag.s0 * f;
+    if(!e.altKey){
+      const [w] = dims(it), right = snap(drag.x0 + w, 0, "x", [W - m, W / 2, W]) ;
+      if(snapLines.length) it.scale = drag.s0 * (right - drag.x0) / drag.w0;
+    }
+  }
+  draw(); buildItems();
+});
+view.addEventListener("pointerup", () => {
+  if(drag){ if(drag.mode === "resize") drag.it.cache = null; drag = null; snapLines = []; persist(); refresh(); }
+});
+document.addEventListener("keydown", e => {
+  const it = cur(); if(!it || e.target.tagName === "INPUT") return;
+  const step = e.shiftKey ? 10 : 1;
+  const mv = {ArrowLeft:[-step,0], ArrowRight:[step,0], ArrowUp:[0,-step], ArrowDown:[0,step]}[e.key];
+  if(mv){ it.x += mv[0]; it.y += mv[1]; e.preventDefault(); persist(); refresh(); }
+  else if(e.key === "Delete" || e.key === "Backspace"){ $("delBtn").click(); e.preventDefault(); }
+});
+
+// ---------------------------------------------------------------- export
+function setStats(h){ $("stats").innerHTML = h; }
+function fmtMin(m){ return m >= 90 ? (m/60).toFixed(1)+" h" : Math.round(m)+" min"; }
+function profile(){
+  // same profile the preview page uses (stored by it), else server defaults
+  try{
+    const p = JSON.parse(localStorage.getItem("plotterui.profile") || "null");
+    return p || {};
+  }catch(e){ return {}; }
+}
+$("exportBtn").onclick = async () => {
+  const [W,H] = paperWH();
+  $("exportBtn").disabled = true; setStats("<span>writing G-code…</span>");
+  try{
+    const r = await fetch("/api/layout/export", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({paper:{w:W, h:H, name:L.paper, orient:L.orient}, pen_mm:L.pen, profile:profile(),
+        items: L.items.map(it => ({id:it.id, x:it.x, y:it.y, scale:it.scale, rot:it.rot}))})});
+    const j = await r.json(); if(!r.ok) throw new Error(j.error);
+    const s = j.stats, f = j.files;
+    setStats(`<span>pen lifts <b>${s.pen_lifts}</b></span><span>ink <b>${(s.draw_mm/1000).toFixed(1)} m</b></span>
+      <span>travel <b>${(s.travel_mm/1000).toFixed(1)} m</b></span><span>plot time ≈ <b>${fmtMin(s.est_minutes)}</b></span>
+      <span style="margin-left:auto;display:flex;gap:6px"><a href="${f.gcode}" download>G-code</a><a href="${f.svg}" download>SVG</a></span>`);
+  }catch(e){ setStats(`<span class="err">${e.message}</span>`); }
+  $("exportBtn").disabled = !L.items.length;
+};
+
+// ---------------------------------------------------------------- start
+(async () => {
+  buildPaper(); buildJobs(); refresh();
+  for(const s of store.get("items", [])){
+    try{ addItem(await loadSource({job:s.job, name:s.name}), s); }catch(e){ /* render was deleted */ }
+  }
+  L.sel = -1; refresh();
+})();
+</script>
+</body>
+</html>

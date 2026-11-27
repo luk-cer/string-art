@@ -10,6 +10,7 @@ written to the work dir and offered as downloads.
 import base64
 import io
 import json
+import math
 import re
 import threading
 import time
@@ -49,6 +50,7 @@ class App:
         (self.work / "uploads").mkdir(parents=True, exist_ok=True)
         (self.work / "jobs").mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()   # one render at a time; they are CPU bound anyway
+        self.sources = {}              # layout: id -> (local polylines, w, h)
 
     # -- uploads -------------------------------------------------------------
     def upload(self, data):
@@ -141,6 +143,78 @@ class App:
             best, score, history = suggest_stringart(str(img), cfg, time_limit=float(req.get("seconds", 150)))
         return {"params": best, "score": round(score, 4), "history": history}
 
+    # -- sheet layout -------------------------------------------------------
+    def jobs(self, limit=60):
+        """Recent renders, newest first, for the layout page."""
+        out = []
+        dirs = sorted((d for d in (self.work / "jobs").iterdir() if (d / "plot.gcode").exists()),
+                      key=lambda d: d.stat().st_mtime, reverse=True)[:limit]
+        for d in dirs:
+            try:
+                meta = json.loads((d / "plot.json").read_text())
+            except (OSError, ValueError):
+                meta = {}
+            st = meta.get("stats", {})
+            p = meta.get("params", {})
+            label = meta.get("style", "?")
+            if p.get("chords"):
+                label += f" · {p['chords']}"
+            if p.get("hatch_mode"):
+                label += f" · {p['hatch_mode']}"
+            out.append({"job": d.name, "label": label, "time": d.stat().st_mtime,
+                        "minutes": st.get("est_minutes"), "pen_mm": (p.get("pen_mm") or None),
+                        "svg": f"/api/file/{d.name}/plot.svg"})
+        return out
+
+    def layout_load(self, req):
+        """Parse a G-code (uploaded text or a previous render) into a placeable drawing."""
+        from .layout import parse_gcode, normalise
+        if req.get("job"):
+            text = self.job_file(req["job"], "plot.gcode").read_text()
+            name = req.get("name") or req["job"][:8]
+        else:
+            text, name = req["gcode"], req.get("name") or "drawing"
+        pls, info = parse_gcode(text)
+        local, w, h = normalise(pls)
+        sid = uuid.uuid4().hex
+        self.sources[sid] = (local, w, h)
+        # preview geometry: drop points closer than 0.1 mm to the previous kept one
+        prev = []
+        for pl in local:
+            keep = [pl[0]]
+            for q in pl[1:]:
+                if abs(q[0] - keep[-1][0]) + abs(q[1] - keep[-1][1]) > 0.1:
+                    keep.append(q)
+            if keep[-1] != pl[-1]:
+                keep.append(pl[-1])
+            prev.append([round(c, 2) for pt in keep for c in pt])
+        draw_mm = sum(math.dist(a, b) for pl in local for a, b in zip(pl, pl[1:]))
+        return {"id": sid, "name": name, "w": w, "h": h, "polylines": prev,
+                "strokes": len(local), "draw_mm": draw_mm, "pen": info["pen"]}
+
+    def layout_export(self, req):
+        from .gcode import write_gcode, write_svg
+        from .layout import compose
+        paper = req["paper"]
+        pw, ph = float(paper["w"]), float(paper["h"])
+        items = req.get("items") or []
+        if not items:
+            raise ValueError("nothing on the sheet")
+        pls = compose(items, self.sources)
+        profile = pipeline.config_from_dict(PlotterProfile, req.get("profile") or {})
+        profile.corner_tol_mm = 0.0            # the source files were already processed
+        job = uuid.uuid4().hex
+        jdir = self.work / "jobs" / job
+        jdir.mkdir(parents=True)
+        stats = write_gcode(pls, str(jdir / "plot.gcode"), profile, paper_height=ph, paper_width=pw,
+                            comment=f"sheet layout: {len(items)} drawings on {pw:g} x {ph:g} mm")
+        write_svg(pls, str(jdir / "plot.svg"), pw, ph, float(req.get("pen_mm") or 0.3))
+        meta = {"style": "layout", "params": {"paper": paper, "items": items}, "profile": req.get("profile"),
+                "stats": stats}
+        (jdir / "plot.json").write_text(json.dumps(meta, indent=1, default=str))
+        return {"job": job, "stats": stats,
+                "files": {ext: f"/api/file/{job}/plot.{ext}" for ext in ("gcode", "svg", "json")}}
+
     def job_file(self, job, name):
         if not ID_RE.match(job) or not FILE_RE.match(name):
             raise ValueError("bad path")
@@ -185,6 +259,10 @@ def make_handler(app):
                 parts = self.path.split("?")[0].strip("/").split("/")
                 if self.path in ("/", "/index.html"):
                     self._send(200, (HERE / "ui_index.html").read_bytes(), "text/html; charset=utf-8")
+                elif self.path.split("?")[0] in ("/layout", "/layout.html"):
+                    self._send(200, (HERE / "ui_layout.html").read_bytes(), "text/html; charset=utf-8")
+                elif parts == ["api", "jobs"]:
+                    self._send(200, app.jobs())
                 elif parts == ["api", "presets", "scribble"]:
                     from dataclasses import asdict
                     from .scribble import ScribbleConfig, PRESETS
@@ -212,6 +290,10 @@ def make_handler(app):
                     self._send(200, app.upload(body))
                 elif self.path == "/api/render":
                     self._send(200, app.render(json.loads(body)))
+                elif self.path == "/api/layout/load":
+                    self._send(200, app.layout_load(json.loads(body)))
+                elif self.path == "/api/layout/export":
+                    self._send(200, app.layout_export(json.loads(body)))
                 elif self.path == "/api/suggest":
                     self._send(200, app.suggest(json.loads(body)))
                 else:
