@@ -62,6 +62,8 @@ class StringArtConfig:
     dash_period_mm: float = 5.0     # one dash + one gap; dash share of it follows the tone
     dash_min_mm: float = 0.5        # drop dashes shorter than this
     gap_min_mm: float = 0.4         # don't lift the pen for gaps shorter than this
+    # after the greedy pass: rounds of "remove lines that hurt, add lines that help" (0 = off)
+    refine: int = 10
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +352,147 @@ def solve(target, weight, cfg, table=None, progress=None):
             errors.append((step, err))
             progress(step, err)
 
+    if cfg.refine > 0 and not cfg.continuous and strokes:
+        strokes, cov = refine(strokes, t, w, cov, cfg, table, drawable, blocked, progress=progress)
     return strokes, cov.reshape(target.shape), errors
+
+
+def refine(strokes, t, w, cov, cfg, table, drawable, blocked, progress=None):
+    """Local search after the greedy solve. The greedy pass never revisits a line:
+    early lines were chosen when the picture was empty and many end up redundant
+    once later lines cross the same area. Each round:
+
+    * remove: drop every line whose removal lowers the error (its ink is
+      divided back out: cov' = 1 - (1 - cov) / (1 - a));
+    * add: add the best lines anywhere while they still lower the error
+      (lazy greedy: a line's gain only shrinks as ink is added, so a stale
+      gain is an upper bound and only the top of the queue is re-scored).
+
+    The resulting set of lines is chained into pen strokes again (chain_lines).
+    Returns (strokes, cov)."""
+    import heapq
+    n, B, os_ = cfg.nails, table.B, cfg.overshoot
+
+    def cells_alpha(i, j, bi):
+        idx = table.line_cells(i, j, bi)
+        a = np.full(len(idx), table.alpha[i, j, bi], np.float64)
+        if drawable is not None:
+            a = a * drawable[idx]
+        return idx, np.minimum(a, 0.999)
+
+    def err(r, ww):
+        return ww * np.where(r > 0, r * r, os_ * r * r)
+
+    def add_gain(idx, a):
+        c = cov[idx]
+        r = t[idx] - c
+        return float(np.sum(err(r, w[idx]) - err(r - a * (1 - c), w[idx])))
+
+    lines = {}
+    for s in strokes:
+        for k in range(len(s) - 1):
+            i, j, bi = s[k], s[k + 1], s.bends[k]
+            lines[(min(i, j), max(i, j), bi)] = None
+    for key in lines:
+        lines[key] = cells_alpha(*key)
+    n0 = len(lines)
+    removed_total = added_total = 0
+
+    for rnd in range(cfg.refine):
+        # --- remove pass: worst lines first, gains re-checked as we go
+        def rm_gain(key):
+            idx, a = lines[key]
+            c = cov[idx]
+            cw = 1 - (1 - c) / (1 - a)
+            r = t[idx] - c
+            return float(np.sum(err(r, w[idx]) - err(t[idx] - cw, w[idx]))), cw
+
+        order = sorted(lines, key=lambda k: -rm_gain(k)[0])
+        removed = 0
+        for key in order:
+            if len(lines) <= cfg.min_lines:
+                break
+            g, cw = rm_gain(key)
+            if g > 0:
+                cov[lines[key][0]] = np.maximum(cw, 0.0)
+                del lines[key]
+                removed += 1
+
+        # --- add pass: lazy greedy over every allowed line
+        heap = []
+        for i in range(n):
+            g = _fan_gain(table, i, t, w, cov, os_, drawable)
+            for c in np.flatnonzero(~blocked[i] & (g > 0)):
+                j, bi = divmod(int(c), B)
+                if j > i and (i, j, bi) not in lines:
+                    heap.append((-float(g[c]), i, j, bi))
+        heapq.heapify(heap)
+        added = 0
+        while heap and len(lines) < cfg.max_lines:
+            _, i, j, bi = heapq.heappop(heap)
+            if (i, j, bi) in lines:
+                continue
+            idx, a = cells_alpha(i, j, bi)
+            g = add_gain(idx, a)
+            if g <= 0:
+                continue
+            if heap and g < -heap[0][0]:
+                heapq.heappush(heap, (-g, i, j, bi))      # stale: re-queue with its true gain
+                continue
+            cov[idx] = 1 - (1 - cov[idx]) * (1 - a)
+            lines[(i, j, bi)] = (idx, a)
+            added += 1
+        removed_total += removed
+        added_total += added
+        if progress:
+            progress(len(lines), float(np.sum(err(t - cov, w)) / np.sum(w)))
+        if removed == 0 and added == 0:
+            break
+    refine.last = dict(lines_before=n0, lines_after=len(lines), removed=removed_total, added=added_total)
+    return chain_lines(list(lines), n), cov
+
+
+def chain_lines(lines, n):
+    """Order a set of nail-to-nail lines (i, j, bend) into as few pen-down strokes as
+    practical: walk from nail to nail along unused lines (Hierholzer-style: start at a
+    nail with an odd number of lines left, prefer moves that don't strand lines), and
+    lift the pen to the nearest nail with lines left when stuck."""
+    adj = [[] for _ in range(n)]
+    for e, (i, j, bi) in enumerate(lines):
+        adj[i].append((j, bi, e))
+        adj[j].append((i, bi, e))
+    used = [False] * len(lines)
+    deg = [len(a) for a in adj]
+    strokes = []
+    cur = None
+    left = len(lines)
+    while left:
+        if cur is None or deg[cur] == 0:
+            cands = [k for k in range(n) if deg[k] > 0]
+            odd = [k for k in cands if deg[k] % 2] or cands
+            if cur is None:
+                cur = odd[0]
+            else:
+                ring = lambda k: min(abs(k - cur), n - abs(k - cur))
+                cur = min(odd, key=ring)
+            strokes.append(Stroke([cur]))
+        best = None
+        for j, bi, e in adj[cur]:
+            if used[e]:
+                continue
+            # prefer a nail that still has other lines (deg after this move > 0), i.e. not a dead end
+            score = (deg[j] - 1 > 0, deg[j] % 2 == 0)
+            if best is None or score > best[0]:
+                best = (score, j, bi, e)
+        _, j, bi, e = best
+        used[e] = True
+        deg[cur] -= 1
+        deg[j] -= 1
+        left -= 1
+        strokes[-1].append(j)
+        strokes[-1].bends.append(bi)
+        cur = j
+    return strokes
 
 
 # ---------------------------------------------------------------------------

@@ -197,7 +197,7 @@ may cross itself; "pen held and squiggling" with momentum and random perturbatio
 | UI | `python -m plotter ui` | everything above, with help |
 | Old renders | `python -m plotter lines2gcode render.json` | |
 
-Tests: `uv run --with pytest pytest -q tests` (19 tests).
+Tests: `uv run --with pytest pytest -q tests` (30 tests).
 
 ---
 
@@ -234,7 +234,14 @@ Tests: `uv run --with pytest pytest -q tests` (19 tests).
       Gentler fixed bends score better and look calmer (bend 1.0: 0.669, 0.7: 0.683, 0.5: 0.688,
       0.3: 0.691), but mixed bends (`warp`, 0.717) beat all of them. Use `warp`. `poincare` stays as
       a look, not for likeness.
-- [ ] Refinement after greedy: try removing/swapping lines (local search / annealing), typically a large gain.
+- [x] **Refinement after greedy** (`refine`, default 10 rounds, CLI `--refine`, UI slider). Each round
+      removes every line whose removal lowers the error (ink divided back out), then adds the best lines
+      anywhere (lazy greedy: gains only shrink as ink is added, so stale gains are upper bounds). The final
+      set of lines is re-chained into strokes. **Why:** the greedy never revisits a line, and early lines
+      become redundant once later ones cross the same area. Test portrait, 0.1 mm pen:
+      straight 0.704 → 0.721 (6 rounds), warp 0.717 → 0.747, dashed warp 0.823 → 0.867 (10) / 0.876 (40).
+      Cost: +8 s solve, the same plot time (371 vs 369 min), pen lifts ~25 → ~60 (non-dashed).
+      Features read better (eyes, nose, mouth). Next: annealing or swap moves if more is wanted.
 - [ ] Importance mask (face/eyes weighted higher): UI brush or face detection; also for hatching/scribble.
 - [ ] Include `chords`/`dashed` in the optimiser search; optimiser progress + cancel in the UI.
 - [ ] Two pens / grey levels (e.g. 0.1 mm grey pass + 0.3 mm black pass).

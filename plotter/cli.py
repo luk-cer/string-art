@@ -41,7 +41,7 @@ def cmd_stringart(args):
         stop_ratio=args.stop_ratio, continuous=args.continuous, overshoot=args.overshoot, clahe=args.clahe, vignette=args.vignette, nail_spread_mm=args.nail_spread, frame=args.frame,
         crop=tuple(args.crop) if args.crop else None,
         min_lines=args.min_lines, chords=args.chords, dashed=args.dashed, gap_tone=args.gap_tone,
-        taper=args.taper, dash_period_mm=args.dash_period,
+        taper=args.taper, dash_period_mm=args.dash_period, refine=args.refine,
     )
     if args.auto:
         from dataclasses import replace
@@ -219,6 +219,8 @@ def main(argv=None):
                    help="one unbroken path (thread-like); default lifts the pen when stuck")
     s.add_argument("--frame", action="store_true", help="also draw the circle outline")
     s.add_argument("--min-lines", type=int, default=0, help="keep drawing until this many lines")
+    s.add_argument("--refine", type=int, default=10,
+                   help="rounds of removing/re-adding lines after the greedy solve (0 = off)")
     s.add_argument("--chords", default="straight", choices=["straight", "poincare", "warp"],
                    help="line shape: straight, Poincare arcs, or warp (solver picks a bend per line)")
     s.add_argument("--dashed", action="store_true", help="lift the pen where the photo is lighter than --gap-tone")

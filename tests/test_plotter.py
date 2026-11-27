@@ -33,6 +33,37 @@ def test_ink_saturates_and_stops():
     assert cov.max() < 0.95                      # no solid black blob
 
 
+def test_refine_lowers_error_and_chains_all_lines():
+    from dataclasses import replace
+    size = 50
+    yy, xx = np.mgrid[:size, :size]
+    c = (size - 1) / 2
+    inside = (xx - c) ** 2 + (yy - c) ** 2 <= (size / 2) ** 2
+    target = (0.15 + 0.5 * (xx > c) + 0.2 * (np.abs(yy - c) < 6)) * inside   # two tones + a dark band
+    w = np.ones_like(target)
+    cfg = sa.StringArtConfig(nails=80, min_skip=8, pixel_mm=2.0, diameter_mm=100, pen_mm=0.3,
+                             chords="warp", refine=0)
+
+    def err(cov):
+        r = target - cov
+        return float(np.sum(np.where(r > 0, r * r, cfg.overshoot * r * r)))
+
+    s0, cov0, _ = sa.solve(target, w, cfg)
+    s1, cov1, _ = sa.solve(target, w, replace(cfg, refine=5))
+    assert err(cov1) < err(cov0)
+
+    # re-chained strokes contain each line exactly once and are continuous nail sequences
+    lines = [(min(a, b), max(a, b), bi) for s in s1 for a, b, bi in zip(s, s[1:], s.bends)]
+    assert len(lines) == len(set(lines))
+    # the coverage the solver reports matches redrawing those lines
+    table = sa.LineTable(cfg.nails, size, cfg.pixel_mm, cfg.pen_mm, sa.chord_bends(cfg))
+    cov = np.zeros(size * size)
+    for i, j, bi in lines:
+        idx = table.line_cells(i, j, bi)
+        cov[idx] = 1 - (1 - cov[idx]) * (1 - min(table.alpha[i, j, bi], 0.999))
+    assert np.allclose(cov.reshape(size, size), cov1, atol=1e-6)
+
+
 def test_flow_hatch_smoke(tmp_path):
     from PIL import Image
     from plotter import hatch as hz
