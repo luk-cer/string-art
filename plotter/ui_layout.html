@@ -197,7 +197,9 @@ function buildItems(){
   L.items.forEach((it, i) => {
     const d = document.createElement("div"); d.className = "item" + (i === L.sel ? " on" : "");
     const [w,h] = dims(it);
-    const warn = bad(it) ? `<span class="bad">off paper</span>` : overlaps(i) ? `<span class="bad">overlaps</span>` : "";
+    const dens = it.scale < 0.9
+      ? `<span class="bad" title="Shrunk to ${Math.round(it.scale*100)}%: its lines are ${(1/it.scale).toFixed(1)}× closer, so it plots darker and may soak the paper. Better: render it again at this size (Size on paper ${Math.round(Math.max(w,h))} mm) and place it at 100%.">${(1/it.scale).toFixed(1)}× denser</span>` : "";
+    const warn = bad(it) ? `<span class="bad">off paper</span>` : overlaps(i) ? `<span class="bad">overlaps</span>` : dens;
     d.innerHTML = `<span title="${it.name}">${i+1}. ${it.name}</span><small>${w.toFixed(0)}×${h.toFixed(0)}</small>${warn}
       <button class="btn ghost small" data-a="up" title="Plot earlier">↑</button>`;
     d.onclick = e => {
@@ -412,6 +414,7 @@ $("exportBtn").onclick = async () => {
     const s = j.stats, f = j.files;
     setStats(`<span>pen lifts <b>${s.pen_lifts}</b></span><span>ink <b>${(s.draw_mm/1000).toFixed(1)} m</b></span>
       <span>travel <b>${(s.travel_mm/1000).toFixed(1)} m</b></span><span>plot time ≈ <b>${fmtMin(s.est_minutes)}</b></span>
+      ${s.ink_removed_pct > 0.05 ? `<span title="Overdraw cut by the ink cap (pen width = 'Preview pen' above)">ink cap cut <b>${s.ink_removed_pct}%</b></span>` : ""}
       <span style="margin-left:auto;display:flex;gap:6px"><a href="${f.gcode}" download>G-code</a><a href="${f.svg}" download>SVG</a></span>`);
   }catch(e){ setStats(`<span class="err">${e.message}</span>`); }
   $("exportBtn").disabled = !L.items.length;

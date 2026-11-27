@@ -129,6 +129,7 @@ class App:
                 params["hatch_angles"] = [[float(v) for v in a.split(":")] for a in ha.split(",") if ":" in a]
             if params.get("max_side") in (0, "0"):
                 params["max_side"] = None
+            params.setdefault("size_mm", params.get("diameter_mm") or 0)   # the common "Size on paper"
         if style == "stringart":
             self._with_mask(params, req["image"])
         cfg = pipeline.config_from_dict(cls, params)
@@ -226,7 +227,7 @@ class App:
                 "strokes": len(local), "draw_mm": draw_mm, "pen": info["pen"]}
 
     def layout_export(self, req):
-        from .gcode import write_gcode, write_svg
+        from .gcode import write_gcode, write_svg, limit_ink
         from .layout import compose
         paper = req["paper"]
         pw, ph = float(paper["w"]), float(paper["h"])
@@ -239,9 +240,13 @@ class App:
         job = uuid.uuid4().hex
         jdir = self.work / "jobs" / job
         jdir.mkdir(parents=True)
+        pen = float(req.get("pen_mm") or 0.3)
+        # scaled-down drawings pack their lines closer: the cap trims the overdraw at the final size
+        pls, ink = limit_ink(pls, pen, profile.ink_cap, profile.ink_cell_mm)
         stats = write_gcode(pls, str(jdir / "plot.gcode"), profile, paper_height=ph, paper_width=pw,
                             comment=f"sheet layout: {len(items)} drawings on {pw:g} x {ph:g} mm")
-        write_svg(pls, str(jdir / "plot.svg"), pw, ph, float(req.get("pen_mm") or 0.3))
+        stats["ink_removed_pct"] = round(ink["ink_removed_pct"], 1)
+        write_svg(pls, str(jdir / "plot.svg"), pw, ph, pen)
         meta = {"style": "layout", "params": {"paper": paper, "items": items}, "profile": req.get("profile"),
                 "stats": stats}
         (jdir / "plot.json").write_text(json.dumps(meta, indent=1, default=str))

@@ -124,6 +124,15 @@ class ScribbleConfig:
     workers: int = 1                    # processes for hatching (0 = all cores)
     seed: int | None = 0
     max_side: int | None = None         # downscale input so the longer side is at most this (pixels)
+    # Physical scale. size_mm: longer side of the drawing on paper (circle: diameter); 0 = as big as
+    # fits inside the padding. dpi: working resolution on paper; the image is resampled so one pixel
+    # is 25.4/dpi mm, which makes every *_px setting a fixed physical distance whatever the photo's
+    # resolution or the drawing size (presets were tuned at ~100 dpi). 0 = use max_side instead.
+    size_mm: float = 0.0
+    dpi: float = 0.0
+    # legacy hatching ignores the pen and piles lines onto the same spots; trim it where the paper
+    # would get more than this many covers of ink per 0.5 mm (true pen width, final size). 0 = off.
+    legacy_ink_cap: float = 1.5
     crop: tuple | None = None           # (x, y, w, h) in source pixels
     shape: str = "rect"                 # rect | circle (centred square, lines clipped to the inscribed circle)
     frame: bool = False                 # circle: also draw the circle outline
@@ -395,6 +404,8 @@ def paper_fit(H, W, cfg):
     fit = lambda w, h: min(aw / w, ah / h)
     rot = cfg.rotate == "90" or (cfg.rotate == "auto" and fit(H, W) > fit(W, H) * 1.05)
     cw, ch = (H, W) if rot else (W, H)
+    if getattr(cfg, "size_mm", 0) > 0:
+        return cfg.size_mm / max(H, W), rot, pw, ph       # bounds check reports it if it doesn't fit
     return fit(cw, ch), rot, pw, ph
 
 
@@ -426,7 +437,14 @@ def load_gray(image_path, cfg):
         sq = min(img.size)
         x0, y0 = (img.width - sq) // 2, (img.height - sq) // 2
         img = img.crop((x0, y0, x0 + sq, y0 + sq))
-    if cfg.max_side and max(img.size) > cfg.max_side:
+    if getattr(cfg, "dpi", 0) > 0:
+        # resample (up or down) so one pixel = 25.4/dpi mm at the final drawing size
+        long_mm = max(img.size) * paper_fit(img.height, img.width, cfg)[0]
+        target = max(16, round(long_mm * cfg.dpi / 25.4))
+        s = target / max(img.size)
+        img = img.resize((max(1, round(img.width * s)), max(1, round(img.height * s))),
+                         Image.Resampling.LANCZOS)
+    elif cfg.max_side and max(img.size) > cfg.max_side:
         s = cfg.max_side / max(img.size)
         img = img.resize((max(1, round(img.width * s)), max(1, round(img.height * s))),
                          Image.Resampling.LANCZOS)
@@ -659,7 +677,9 @@ class Scribble:
         for line in src:
             for i, (px, py) in enumerate(line):
                 if c.hatch_adaptive_spacing:
-                    interval = int(c.hatch_sample_interval * (1.5 - self.ipix[px, py]))
+                    r = min(max(int(round(px)), 0), self.ipix.shape[0] - 1)   # trimmed pieces: float ends
+                    q = min(max(int(round(py)), 0), self.ipix.shape[1] - 1)
+                    interval = max(1, int(c.hatch_sample_interval * (1.5 - self.ipix[r, q])))
                 else:
                     interval = c.hatch_sample_interval
                 if i % interval == 0:
@@ -876,6 +896,23 @@ class Scribble:
         c = self.cfg
         return c.hatch_base == "legacy" and c.hatch_mode != "legacy"
 
+    def _cap_legacy(self, progress=None):
+        """Legacy hatching works in image pixels and ignores the pen, so its lines pile up on
+        the same spots (solid black, soaked or torn paper). Trim them where the paper would get
+        more than legacy_ink_cap covers of ink, at the true pen width and final size. The
+        contour lines count as ink already there but are never cut."""
+        c = self.cfg
+        if c.legacy_ink_cap <= 0 or len(self.lines) <= self.n_main:
+            return
+        from .gcode import limit_ink
+        mm_per_px = paper_fit(*self.pix.shape, c)[0]
+        legacy = [l for l in self.lines[self.n_main:] if len(l) > 1]
+        kept, st = limit_ink(legacy, c.pen_mm / mm_per_px, c.legacy_ink_cap, cell_mm=0.5 / mm_per_px,
+                             min_piece_mm=1.0 / mm_per_px, fixed=self.lines[:self.n_main])
+        self.lines = self.lines[:self.n_main] + kept
+        if progress:
+            progress(f"  legacy ink cap {c.legacy_ink_cap}: removed {st['ink_removed_pct']:.0f}% of the hatching")
+
     def run(self, progress=None):
         if self.cfg.seed is not None:
             np.random.seed(self.cfg.seed)
@@ -888,6 +925,7 @@ class Scribble:
         if self.cfg.hatch:
             if self._has_base():
                 self.add_crosshatching(progress)      # legacy base; the tone kind below fills what's missing
+                self._cap_legacy(progress)
             if self.cfg.hatch_mode == "squiggle":
                 self.add_squiggle(progress)
             elif self.cfg.hatch_mode == "freehand":
@@ -896,6 +934,7 @@ class Scribble:
                 self.add_clean_hatching(progress)
             else:
                 self.add_crosshatching(progress)
+                self._cap_legacy(progress)
         if self.cfg.smooth_main and self.cfg.smooth_main > 1:
             self.lines[:self.n_main] = [_smooth_line(l, self.cfg.smooth_main) for l in self.lines[:self.n_main]]
         if self.cfg.shape == "circle":

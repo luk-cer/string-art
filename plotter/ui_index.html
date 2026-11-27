@@ -164,7 +164,7 @@ const COMMON = [
   {k:"portrait", label:"Portrait orientation", type:"check", v:false, not:["radon"]},
   {k:"pen_mm", label:"Pen width", unit:"mm", min:0.05, max:1.0, step:0.05, v:0.3},
   {k:"padding_mm", label:"Padding", unit:"mm", min:0, max:40, step:1, v:10},
-  {k:"diameter_mm", label:"Diameter (0 = fit)", unit:"mm", min:0, max:400, step:5, v:0, not:["radon","scribble"]},
+  {k:"diameter_mm", label:"Size on paper (0 = fit)", unit:"mm", min:0, max:400, step:5, v:0, not:["radon"]},
 ];
 // What each setting does. Key "style:param" overrides plain "param".
 const HELP = {
@@ -173,7 +173,7 @@ const HELP = {
   portrait: "Turn the paper upright (tall) instead of landscape.",
   pen_mm: "Your pen's line width. The algorithms model real ink with it: a wider pen reaches darkness with fewer lines.",
   padding_mm: "Blank margin kept around the drawing on every side.",
-  diameter_mm: "Circle size. 0 = the largest circle that fits inside the padding.",
+  diameter_mm: "How big the drawing will be on paper: circle diameter, or the longer side of a rectangle. 0 = as big as fits inside the padding. Render at the size you will plot: line density and darkness are computed for this size and the pen width, so shrinking a finished drawing later (e.g. on the layout page) makes it darker.",
 
   // string art
   nails: "Points around the circle that lines run between. More nails = finer angles and detail, slower to compute.",
@@ -236,6 +236,8 @@ const HELP = {
 
   // scribble
   preset: "Fills all settings to reproduce one of your scripts exactly: c_v25 (even texture), app5 (high contrast, white highlights), app7 (app5 with denser hatching).",
+  dpi: "Working resolution on paper. The photo is resampled so one pixel is 25.4/dpi mm at the final size, so every 'px' setting below is a fixed physical distance whatever the photo's resolution or the drawing size (100 dpi = 0.25 mm per pixel; the presets were tuned around this). Higher = finer, denser detail and more ink; keep 25.4/dpi at or above about the pen width.",
+  legacy_ink_cap: "Legacy hatching works in pixels and ignores the pen, so its lines pile onto the same spots: solid black blobs, soaked or torn paper. This trims it where the paper would get more than this many covers of ink (per 0.5 mm, at the true pen width). 1.5 keeps the look and dark areas dark; 0 = off (exact original).",
   max_side: "Image is shrunk to this many pixels on the long side before tracing. Sets line density on paper: keep mm per pixel at or above the pen width. 0 = full size.",
   rotate: "auto = turn the image 90 degrees when it fills the page better.",
   "scribble:shape": "rect = whole image. circle = centred square crop, everything clipped to the inscribed circle.",
@@ -325,6 +327,7 @@ const HELP = {
   offset_x: "Shift the whole drawing right (mm).",
   offset_y: "Shift the whole drawing up (mm).",
   pause_every_mm: "Insert an M0 pause after this much drawing, to check or swap the pen. 0 = never.",
+  ink_cap: "Safety net against soaked and torn paper, for every style and the sheet layout. At the final size and true pen width, line pieces are cut where a 0.5 mm spot would get more than this many full covers of ink (paper can't get darker than 1 cover; more just scrubs it). What is drawn first is kept. 3 only touches real piles; the stats show how much was cut.",
   pen_move_s: "Seconds per pen up or down, for the time estimate. Only used when the pen commands have no Z value (e.g. a servo on M3/M5).",
   hop_up: "Lift command for short pen-up moves (e.g. G0 Z2.5): a lower lift is quicker. Empty = always the full pen-up. The pen must still clear the paper at this height.",
   hop_max_mm: "Pen-up moves shorter than this use the short hop.",
@@ -400,7 +403,9 @@ const STYLE_PARAMS = {
   scribble: [
     {group:"Source & layout"},
     {k:"preset", label:"Preset (fills the settings below)", type:"select", opts:["c_v25","app5","app7"], v:"c_v25", apply:true},
-    {k:"max_side", label:"Max image side (0 = full)", unit:"px", min:0, max:3000, step:50, v:800},
+    {k:"dpi", label:"Resolution on paper (0 = use max side)", unit:"dpi", min:0, max:400, step:5, v:100, rebuild:true},
+    {k:"max_side", label:"Max image side (0 = full)", unit:"px", min:0, max:3000, step:50, v:800, when:P => !P.dpi},
+    {k:"legacy_ink_cap", label:"Legacy hatching: max ink", unit:"covers", min:0, max:5, step:0.25, v:1.5},
     {k:"rotate", label:"Rotate", type:"select", opts:["auto","none","90"], v:"auto"},
     {k:"shape", label:"Shape", type:"select", opts:["rect","circle"], v:"rect", rebuild:true, recrop:true},
     {k:"frame", label:"Draw circle outline", type:"check", v:false, when:P => P.shape === "circle"},
@@ -529,6 +534,7 @@ const PROFILE = [
   {k:"junction_deviation_mm", label:"Machine: junction deviation", unit:"mm", min:0.001, max:0.2, step:0.001, v:0.01},
   {k:"planner_blocks", label:"Machine: planner blocks", min:4, max:128, step:1, v:16},
   {k:"pen_move_s", label:"Pen move time (if no Z in pen commands)", unit:"s", min:0, max:1, step:0.05, v:0.15},
+  {k:"ink_cap", label:"Max ink per spot (0 = off)", unit:"covers", min:0, max:10, step:0.5, v:3},
 ];
 const PROFILE_TEXT = {header:"G21\nG90", footer:"G0 X0 Y0"};
 
@@ -641,7 +647,7 @@ function buildControls(){
 }
 // scribble presets come from the server (plotter/scribble.py PRESETS) so they never drift
 let _presets = null;
-const KEEP_ON_PRESET = ["preset","max_side","rotate","shape","frame","workers","seed","simplify_px","join_px",
+const KEEP_ON_PRESET = ["preset","max_side","dpi","legacy_ink_cap","rotate","shape","frame","workers","seed","simplify_px","join_px",
   "hatch_mode","main_lines","freehand_density","freehand_loop_min","freehand_loop_max","freehand_advance",
   "freehand_momentum","freehand_noise","freehand_tone_jitter","freehand_wobble","freehand_flow_pull","freehand_stroke_px","freehand_walls","freehand_major_px","hatch_view_px","hatch_ink_passes","hatch_spacing_min_px","hatch_spacing_max_px","hatch_fill_px","hatch_max_turn_deg","main_momentum","smooth_main"];
 async function applyPreset(name){
@@ -909,6 +915,8 @@ function showStats(){
   parts.push(`<span>ink <b>${(s.draw_mm/1000).toFixed(1)} m</b></span>`);
   parts.push(`<span>travel <b>${(s.travel_mm/1000).toFixed(1)} m</b></span>`);
   parts.push(`<span>plot time ≈ <b>${fmtMin(s.est_minutes)}</b></span>`);
+  if(s.ink_removed_pct > 0.05)
+    parts.push(`<span title="Line pieces cut by 'Max ink per spot' (overdraw that would soak or tear the paper)">ink cap cut <b>${s.ink_removed_pct}%</b></span>`);
   if(s.draw_minutes != null)
     parts.push(`<span title="Drawing time with braking at joints vs. everything at full feed; then pen up/down time">drawing <b>${fmtMin(s.draw_minutes)}</b> (full feed ${fmtMin(s.draw_ideal_minutes)}), pen moves <b>${fmtMin(s.pen_lift_minutes)}</b></span>`);
   parts.push(`<span style="color:var(--muted)">computed in ${s.seconds}s</span>`);

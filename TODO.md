@@ -197,7 +197,7 @@ may cross itself; "pen held and squiggling" with momentum and random perturbatio
 | UI | `python -m plotter ui` | everything above, with help |
 | Old renders | `python -m plotter lines2gcode render.json` | |
 
-Tests: `uv run --with pytest pytest -q tests` (31 tests).
+Tests: `uv run --with pytest pytest -q tests` (33 tests).
 
 ---
 
@@ -206,6 +206,21 @@ Tests: `uv run --with pytest pytest -q tests` (31 tests).
 ### P1: needs the real plotter
 - [ ] **Plot one of each style on paper** and compare with the previews: line weight, pen bleed at
       crossings, whether dashes read as tone.
+      **First sheet (flow hatch + legacy scribble via the layout page, 0.2 mm pen):** too dark, paper
+      torn where lines pile up. Cause, measured as ink load (covers of ink per cell at true pen width):
+      legacy hatching works in image pixels and ignores the pen. On the group photo at 150 mm it puts
+      11% of the area at solid black (photo: 3%), and a cap of 3 would cut 67% of its ink. The layout
+      page shrank both drawings to 73–79%, packing lines 1.3–1.4× closer. The ink-aware modes are close
+      to the photo (freehand ×1.05, ink ×1.16, squiggle ×0.71 mean darkness). Straight lines across the
+      sheet: pen not lifting fully (new pen holder).
+      **Fixed:** (1) scribble `size_mm` + `dpi`: the photo is resampled so 1 px = 25.4/dpi mm at the final
+      size, so every px setting is physical (UI: common "Size on paper", scribble "Resolution"). (2)
+      `legacy_ink_cap` 1.5: legacy hatch lines trimmed where they'd exceed 1.5 covers per 0.5 mm
+      (contours count, never cut). legacy+clean: 217 m → 83 m at the same mean darkness, no piles. (3)
+      Profile `ink_cap` 3 on every export and the layout sheet (`gcode.limit_ink`), at the final size;
+      the stats show the % cut. (4) Layout warns "N× denser" for items shrunk below 90%.
+- [ ] Layout: re-render a placed drawing at its placed size (same params, size = placed size) instead
+      of scaling its G-code. Needs the image id stored in the job's plot.json.
 - [ ] Verify profile: Y direction (`flip_y`), origin, Z values, dwell. Record the working profile in the repo.
 - [ ] Time a real plot and compare with the estimate (it now models the planner; check it's honest).
 - [ ] Try on the machine, one at a time: `dwell_s 0` (stepper lift moves in order, no settle needed?),

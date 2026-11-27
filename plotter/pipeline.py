@@ -193,10 +193,15 @@ STYLES["scribble"] = (_scribble_entry(), build_scribble)
 
 
 def export(result: Result, out_base, profile: PlotterProfile, comment=None):
+    """Write .gcode and .svg. The ink cap is applied first, at the final size and true pen
+    width; result.polylines is replaced by what is actually plotted."""
+    from .gcode import limit_ink
     os.makedirs(os.path.dirname(out_base) or ".", exist_ok=True)
+    result.polylines, ink = limit_ink(result.polylines, result.pen_mm, profile.ink_cap, profile.ink_cell_mm)
     stats = write_gcode(result.polylines, out_base + ".gcode", profile,
                         paper_height=result.paper_h, comment=comment, paper_width=result.paper_w)
     write_svg(result.polylines, out_base + ".svg", result.paper_w, result.paper_h, result.pen_mm)
+    stats["ink_removed_pct"] = round(ink["ink_removed_pct"], 1)
     return stats
 
 

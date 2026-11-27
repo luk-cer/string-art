@@ -33,6 +33,33 @@ def test_ink_saturates_and_stops():
     assert cov.max() < 0.95                      # no solid black blob
 
 
+def test_ink_cap_limits_overdraw_and_keeps_fixed():
+    from plotter.gcode import limit_ink, ink_load
+    # 40 identical 20 mm strokes on one spot = 40 covers with a 0.5 mm pen on a 0.5 mm grid
+    pile = [[(0.0, 0.0), (20.0, 0.0)] for _ in range(40)]
+    kept, st = limit_ink(pile, 0.5, 3.0, cell_mm=0.5)
+    load, _ = ink_load(kept, 0.5, 0.5)
+    assert load.max() <= 3.0 * 1.2 and 80 < st["ink_removed_pct"] < 98
+    # a single stroke far from everything is untouched
+    kept, st = limit_ink([[(0.0, 50.0), (20.0, 50.0)]], 0.5, 3.0)
+    assert st["ink_removed_pct"] == 0 and len(kept) == 1
+    # fixed strokes count but are never returned or cut: with 3 covers already there, nothing fits
+    kept, st = limit_ink([[(0.0, 0.0), (20.0, 0.0)]], 0.5, 2.0, cell_mm=0.5, fixed=pile[:3])
+    assert kept == [] and st["ink_removed_pct"] == 100
+
+
+def test_scribble_size_and_dpi_set_working_resolution(tmp_path):
+    from PIL import Image
+    from plotter import scribble as scr
+    Image.new("L", (1000, 500), 128).save(tmp_path / "p.png")
+    cfg = scr.ScribbleConfig(size_mm=127.0, dpi=100.0)
+    pix = scr.load_gray(str(tmp_path / "p.png"), cfg)
+    assert pix.shape == (250, 500)                       # 127 mm at 100 dpi = 500 px on the long side
+    assert abs(scr.paper_fit(*pix.shape, cfg)[0] - 0.254) < 1e-9
+    small = scr.load_gray(str(tmp_path / "p.png"), scr.ScribbleConfig(size_mm=63.5, dpi=100.0))
+    assert small.shape == (125, 250)                     # half the size -> half the pixels, same mm/px
+
+
 def test_importance_mask_lines_up_and_weights(tmp_path):
     from PIL import Image
     from plotter.importance import importance_map

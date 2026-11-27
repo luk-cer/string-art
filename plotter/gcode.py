@@ -69,6 +69,11 @@ class PlotterProfile:
     machine_y_mm: float = 380.0
     # fallback when the pen commands have no Z word (e.g. M3/M5 servo): seconds per pen move
     pen_move_s: float = 0.15
+    # Ink limit: at the final size and true pen width, cut line pieces where the paper would get
+    # more than this many full covers of ink per ink_cell_mm cell. Past ~1 cover the paper can't
+    # get darker; the pen only scrubs it (soaked paper, tears). 0 = off.
+    ink_cap: float = 3.0
+    ink_cell_mm: float = 0.5
 
     @classmethod
     def load(cls, path):
@@ -201,6 +206,104 @@ def round_corners(pl, tol, step_deg=45.0, min_deg=8.0):
             out.append((a * p0[0] + b * bx + c * p2[0], a * p0[1] + b * by + c * p2[1]))
     out.append(tuple(pl[-1]))
     return out
+
+
+def limit_ink(polylines, pen_mm, cap, cell_mm=0.5, min_piece_mm=1.0, fixed=()):
+    """Cut the parts of strokes that would put more than `cap` full covers of ink on any
+    cell_mm x cell_mm patch of paper (ink = pen width x length). Strokes are taken in
+    drawing order, so what is drawn first (contours, string-art lines) is kept and
+    later overdraw is dropped. Pieces shorter than min_piece_mm are dropped too (they'd
+    cost a pen lift for a dot). `fixed` strokes count as ink already on the paper but are
+    never cut and not returned. Units only need to agree (mm, or pixels with pen in pixels).
+    Returns (polylines, stats)."""
+    if cap <= 0 or not polylines:
+        return polylines, {"ink_removed_mm": 0.0, "ink_removed_pct": 0.0}
+    allp = np.concatenate([np.asarray(p, float) for p in list(polylines) + list(fixed) if len(p) > 1])
+    x0, y0 = allp.min(0) - cell_mm
+    nx, ny = (np.ceil((allp.max(0) - allp.min(0)) / cell_mm) + 3).astype(int)
+    load = np.zeros(nx * ny)
+    step = cell_mm / 4
+    unit = step * pen_mm / cell_mm ** 2               # covers one sample adds to its cell
+    limit = cap + 1e-9
+    for pl in fixed:
+        P = np.asarray(pl, float)
+        if len(P) < 2:
+            continue
+        cum = np.r_[0.0, np.cumsum(np.hypot(*np.diff(P, axis=0).T))]
+        n = max(1, int(math.ceil(cum[-1] / step)))
+        s = (np.arange(n) + 0.5) * (cum[-1] / n)
+        x, y = np.interp(s, cum, P[:, 0]), np.interp(s, cum, P[:, 1])
+        np.add.at(load, ((y - y0) / cell_mm).astype(int) * nx + ((x - x0) / cell_mm).astype(int),
+                  unit * (cum[-1] / n) / step)
+    out, total, removed = [], 0.0, 0.0
+    for pl in polylines:
+        P = np.asarray(pl, float)
+        if len(P) < 2:
+            continue
+        seg = np.hypot(*np.diff(P, axis=0).T)
+        cum = np.r_[0.0, np.cumsum(seg)]
+        L = cum[-1]
+        total += L
+        if L <= 0:
+            continue
+        n = max(1, int(math.ceil(L / step)))
+        s = (np.arange(n) + 0.5) * (L / n)             # sample positions along the stroke
+        k = np.clip(np.searchsorted(cum, s, side="right") - 1, 0, len(seg) - 1)
+        t = (s - cum[k]) / np.maximum(seg[k], 1e-12)
+        q = P[k] + t[:, None] * (P[k + 1] - P[k])
+        cid = ((q[:, 1] - y0) / cell_mm).astype(int) * nx + ((q[:, 0] - x0) / cell_mm).astype(int)
+        w = unit * (L / n) / step
+        # running count of this stroke's own samples per cell (exact sequential check: a sample is
+        # kept iff the cell plus every earlier kept sample of this stroke stays under the cap;
+        # earlier samples in the same cell are kept whenever a later one is)
+        order = np.argsort(cid, kind="stable")
+        sc = cid[order]
+        first = np.r_[True, sc[1:] != sc[:-1]]
+        idx = np.arange(n)
+        rank = idx - np.maximum.accumulate(np.where(first, idx, 0))
+        occ = np.empty(n, int)
+        occ[order] = rank
+        keep = load[cid] + (occ + 1) * w <= limit
+        if keep.all():
+            np.add.at(load, cid, w)
+            out.append(pl)
+            continue
+        np.add.at(load, cid[keep], w)
+        # kept runs -> sub-polylines: run start/end points plus the original vertices in between
+        edges = np.flatnonzero(np.diff(np.r_[0, keep.astype(np.int8), 0]))
+        for a, b in zip(edges[0::2], edges[1::2] - 1):
+            sa_, sb_ = s[a] - 0.5 * L / n, s[b] + 0.5 * L / n
+            if sb_ - sa_ < min_piece_mm:
+                removed += sb_ - sa_
+                continue
+            pa = np.interp(sa_, cum, P[:, 0]), np.interp(sa_, cum, P[:, 1])
+            pb = np.interp(sb_, cum, P[:, 0]), np.interp(sb_, cum, P[:, 1])
+            mid = [tuple(v) for v in P[(cum > sa_) & (cum < sb_)]]
+            out.append([pa, *mid, pb])
+        removed += (~keep).sum() * (L / n)
+    return out, {"ink_removed_mm": removed, "ink_removed_pct": 100.0 * removed / max(total, 1e-9)}
+
+
+def ink_load(polylines, pen_mm, cell_mm=1.0):
+    """Covers of ink per cell (1.0 = paper covered once), for checking a plot. Returns
+    (load grid, origin (x0, y0))."""
+    allp = np.concatenate([np.asarray(p, float) for p in polylines if len(p) > 1])
+    x0, y0 = allp.min(0) - cell_mm
+    nx, ny = (np.ceil((allp.max(0) - allp.min(0)) / cell_mm) + 3).astype(int)
+    load = np.zeros(nx * ny)
+    step = cell_mm / 4
+    for pl in polylines:
+        P = np.asarray(pl, float)
+        if len(P) < 2:
+            continue
+        seg = np.hypot(*np.diff(P, axis=0).T)
+        cum = np.r_[0.0, np.cumsum(seg)]
+        n = max(1, int(math.ceil(cum[-1] / step)))
+        s = (np.arange(n) + 0.5) * (cum[-1] / n)
+        x, y = np.interp(s, cum, P[:, 0]), np.interp(s, cum, P[:, 1])
+        np.add.at(load, ((y - y0) / cell_mm).astype(int) * nx + ((x - x0) / cell_mm).astype(int),
+                  (cum[-1] / n) * pen_mm / cell_mm ** 2)
+    return load.reshape(ny, nx), (x0, y0)
 
 
 def _z_of(cmd):
