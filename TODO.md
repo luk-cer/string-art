@@ -197,7 +197,7 @@ may cross itself; "pen held and squiggling" with momentum and random perturbatio
 | UI | `python -m plotter ui` | everything above, with help |
 | Old renders | `python -m plotter lines2gcode render.json` | |
 
-Tests: `uv run --with pytest pytest -q tests` (33 tests).
+Tests: `uv run --with pytest pytest -q tests` (35 tests).
 
 ---
 
@@ -219,8 +219,19 @@ Tests: `uv run --with pytest pytest -q tests` (33 tests).
       (contours count, never cut). legacy+clean: 217 m → 83 m at the same mean darkness, no piles. (3)
       Profile `ink_cap` 3 on every export and the layout sheet (`gcode.limit_ink`), at the final size;
       the stats show the % cut. (4) Layout warns "N× denser" for items shrunk below 90%.
+- [x] **Compose page** (`/compose`, `plotter/ui_compose.html`, `App.compose_item/compose_export`): drop
+      several photos, place and size a frame for each (circle or rectangle; string art circle only, flow
+      hatch square), pick a style, darkness, zoom/pan of the photo in the frame. Each photo is solved for
+      the real pen at exactly its frame's size, then moved into place (verified: lines land inside the
+      frame for every style/shape). Moving a rendered frame needs no re-render (export takes offsets);
+      resizing or changing settings marks it "changed". Other settings come from the preview page's last
+      settings per style. The G-code layout page stays for finished files.
+- [x] **Darkness slider** (`tone`, all styles, common UI control and per compose frame): the darkness
+      target × tone, so lower = lighter and sparser. Portrait, 1.0/0.6/0.3: string art 36/18/5 m,
+      flow hatch 31/13/6 m, scribble ink 82/37/29 m, freehand 81/43/30 m. Squiggle/legacy floor at ~27 m
+      = the contour lines (they follow edges; raise the gradient threshold for fewer).
 - [ ] Layout: re-render a placed drawing at its placed size (same params, size = placed size) instead
-      of scaling its G-code. Needs the image id stored in the job's plot.json.
+      of scaling its G-code. plot.json now stores the image id. (Compose covers the new-photo case.)
 - [ ] Verify profile: Y direction (`flip_y`), origin, Z values, dwell. Record the working profile in the repo.
 - [ ] Time a real plot and compare with the estimate (it now models the planner; check it's honest).
 - [ ] Try on the machine, one at a time: `dwell_s 0` (stepper lift moves in order, no settle needed?),

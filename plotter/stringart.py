@@ -41,6 +41,7 @@ class StringArtConfig:
     pixel_mm: float = 0.6           # simulation cell size (viewing resolution)
     min_skip: int = 15              # minimum nails between endpoints (no short edge chords)
     max_darkness: float = 0.9       # darkest target tone (1 = solid ink)
+    tone: float = 1.0               # overall darkness: <1 = lighter picture, fewer lines
     gamma: float = 1.0              # >1 lightens midtones, <1 darkens
     clahe: float = 0.02             # local contrast boost (0 = off); brings out eyes/mouth
     vignette: float = 0.0           # 0..1 fade target to white towards the rim (busy backgrounds)
@@ -101,7 +102,7 @@ def prepare_target(image_path, cfg, size_px):
         g = equalize_adapthist(g, kernel_size=max(8, size_px // 8), clip_limit=cfg.clahe)
     lo, hi = np.percentile(g, [cfg.contrast_clip, 100 - cfg.contrast_clip])
     g = np.clip((g - lo) / max(hi - lo, 1e-6), 0, 1) ** cfg.gamma
-    darkness = (1.0 - g) * cfg.max_darkness
+    darkness = (1.0 - g) * cfg.max_darkness * getattr(cfg, "tone", 1.0)
 
     # error weights: emphasise edges so eyes / mouth / jaw survive
     blurred = img.filter(ImageFilter.GaussianBlur(1.0))

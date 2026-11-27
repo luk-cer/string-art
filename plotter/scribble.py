@@ -133,6 +133,9 @@ class ScribbleConfig:
     # legacy hatching ignores the pen and piles lines onto the same spots; trim it where the paper
     # would get more than this many covers of ink per 0.5 mm (true pen width, final size). 0 = off.
     legacy_ink_cap: float = 1.5
+    # overall darkness: <1 = lighter picture, fewer tone lines (scales the tone target of every
+    # tone mode and legacy_ink_cap; contour lines follow edges and are not affected)
+    tone: float = 1.0
     crop: tuple | None = None           # (x, y, w, h) in source pixels
     shape: str = "rect"                 # rect | circle (centred square, lines clipped to the inscribed circle)
     frame: bool = False                 # circle: also draw the circle outline
@@ -738,7 +741,7 @@ class Scribble:
             drawn = 1 - (1 - main_ink) * (1 - np.clip(base_ink, 0, 1))
             self.base_ink = base_ink
         v = c.hatch_view_px
-        T = np.clip(gaussian_filter(self.ipix, v), 0, 0.97)
+        T = np.clip(gaussian_filter(self.ipix, v) * c.tone, 0, 0.97)
         M = np.clip(gaussian_filter(drawn, v), 0, 0.97)
         darkness = np.clip(1 - (1 - T) / (1 - M), 0, 1)
         self.main_ink, self.hatch_target = main_ink, darkness
@@ -845,7 +848,7 @@ class Scribble:
                          max_len_mm=c.hatch_max_length, min_len_mm=c.hatch_clean_min_len,
                          min_len_spacings=2.0, tone_smooth_mm=1.0, seed_margin=0.03, overrun=0.05,
                          layer_thresholds=tuple(max(0.0, t + c.hatch_threshold_shift) for _, t in angles))
-        darkness = self.ipix
+        darkness = self.ipix * c.tone
         # on a legacy base, clean = ink: "add only what's missing" needs the calibrated coverage path
         # (a raw residual rarely reaches the layer thresholds, so plain clean would draw almost nothing)
         ink_aware = c.hatch_ink_aware or c.hatch_mode == "ink" or self._has_base()
@@ -907,7 +910,7 @@ class Scribble:
         from .gcode import limit_ink
         mm_per_px = paper_fit(*self.pix.shape, c)[0]
         legacy = [l for l in self.lines[self.n_main:] if len(l) > 1]
-        kept, st = limit_ink(legacy, c.pen_mm / mm_per_px, c.legacy_ink_cap, cell_mm=0.5 / mm_per_px,
+        kept, st = limit_ink(legacy, c.pen_mm / mm_per_px, c.legacy_ink_cap * c.tone, cell_mm=0.5 / mm_per_px,
                              min_piece_mm=1.0 / mm_per_px, fixed=self.lines[:self.n_main])
         self.lines = self.lines[:self.n_main] + kept
         if progress:

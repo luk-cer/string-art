@@ -51,6 +51,7 @@ class App:
         (self.work / "jobs").mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()   # one render at a time; they are CPU bound anyway
         self.sources = {}              # layout: id -> (local polylines, w, h)
+        self.composed = {}             # compose: key -> placed paper polylines
 
     # -- uploads -------------------------------------------------------------
     def upload(self, data):
@@ -109,14 +110,14 @@ class App:
         return params
 
     # -- render --------------------------------------------------------------
-    def render(self, req):
-        style = req.get("style")
+    def _config(self, style, params, crop, image):
+        """UI params -> (style config, build function)."""
         if style not in pipeline.STYLES:
             raise ValueError(f"unknown style {style!r}")
         cls, build = pipeline.STYLES[style]
-        params = dict(req.get("params") or {})
-        if req.get("crop"):
-            params["crop"] = req["crop"]
+        params = dict(params or {})
+        if crop:
+            params["crop"] = crop
         if style == "hatch":
             n = int(params.pop("layers", 4))
             params["layer_angles"] = [params.pop(f"a{i}", d) for i, d in
@@ -131,8 +132,12 @@ class App:
                 params["max_side"] = None
             params.setdefault("size_mm", params.get("diameter_mm") or 0)   # the common "Size on paper"
         if style == "stringart":
-            self._with_mask(params, req["image"])
-        cfg = pipeline.config_from_dict(cls, params)
+            self._with_mask(params, image)
+        return pipeline.config_from_dict(cls, params), build, params
+
+    def render(self, req):
+        style = req.get("style")
+        cfg, build, params = self._config(style, req.get("params"), req.get("crop"), req["image"])
         profile = pipeline.config_from_dict(PlotterProfile, req.get("profile") or {})
 
         img = self.image_path(req["image"])
@@ -148,7 +153,7 @@ class App:
                                 comment=f"{style} via preview UI")
         info = {k: v for k, v in res.info.items() if k != "nail_strokes"}
         meta = {"style": style, "params": params, "profile": req.get("profile"),
-                "stats": stats, "info": info}
+                "stats": stats, "info": info, "image": req["image"]}
         if "nail_strokes" in res.info:
             meta["nail_strokes"] = res.info["nail_strokes"]
         (jdir / "plot.json").write_text(json.dumps(meta, indent=1, default=str))
@@ -163,6 +168,72 @@ class App:
                        "simulation": _png_data_url(res.simulation)},
             "files": {ext: f"/api/file/{job}/plot.{ext}" for ext in ("gcode", "svg", "json")},
         }
+
+    # -- compose: several photos, each solved at the size of its frame on the sheet ---------
+    def compose_item(self, req):
+        """Render one photo for a frame {x, y, w, h} (mm on the sheet). The drawing is solved at
+        exactly the frame's size with the real pen, then moved into place. Returns the placed
+        polylines; they're kept server-side under `key` for compose_export."""
+        style = req.get("style")
+        f = req["frame"]
+        x, y, w, h = (float(f[k]) for k in ("x", "y", "w", "h"))
+        shape = req.get("shape", "circle")
+        params = dict(req.get("params") or {})
+        pen = float(req.get("pen_mm") or params.get("pen_mm") or 0.3)
+        # a big page so nothing is clipped; the drawing is centred on it and moved afterwards
+        params.update(pen_mm=pen, paper="A3", portrait=True, padding_mm=0, tone=float(req.get("tone", 1.0)))
+        if style == "scribble":
+            params.update(shape=shape, size_mm=max(w, h), diameter_mm=max(w, h), rotate="none")
+            if not params.get("dpi"):
+                params["dpi"] = 100
+        elif style == "hatch":
+            params.update(shape="rect" if shape == "rect" else "circle", diameter_mm=min(w, h))
+        else:
+            params.update(diameter_mm=min(w, h))
+        cfg, build, _ = self._config(style, params, req.get("crop"), req["image"])
+        img = self.image_path(req["image"])
+        t0 = time.time()
+        with self.lock:
+            res = build(str(img), cfg)
+        dx, dy = x + w / 2 - res.paper_w / 2, y + h / 2 - res.paper_h / 2
+        placed = [[(px + dx, py + dy) for px, py in pl] for pl in res.polylines]
+        key = uuid.uuid4().hex
+        self.composed[key] = placed
+        length = sum(math.dist(a, b) for pl in placed for a, b in zip(pl, pl[1:]))
+        return {"key": key, "polylines": [[round(c, 2) for pt in pl for c in pt] for pl in placed],
+                "stats": {"draw_m": round(length / 1000, 1), "strokes": len(placed),
+                          "seconds": round(time.time() - t0, 1)}}
+
+    def compose_export(self, req):
+        from .gcode import write_gcode, write_svg, limit_ink
+        paper = req["paper"]
+        pw, ph = float(paper["w"]), float(paper["h"])
+        # parts: [{key, dx, dy}] in plot order; dx/dy = how far the frame was moved after rendering
+        parts = req.get("parts") or [{"key": k} for k in req.get("keys") or []]
+        missing = [p["key"] for p in parts if p.get("key") not in self.composed]
+        if not parts or missing:
+            raise ValueError("render every frame first" if not parts else
+                             "some frames are no longer rendered on the server (restart?); render them again")
+        pls = []
+        for p in parts:
+            dx, dy = float(p.get("dx", 0)), float(p.get("dy", 0))
+            pls += [[(x + dx, y + dy) for x, y in pl] for pl in self.composed[p["key"]]]
+        keys = [p["key"] for p in parts]
+        profile = pipeline.config_from_dict(PlotterProfile, req.get("profile") or {})
+        pen = float(req.get("pen_mm") or 0.3)
+        pls, ink = limit_ink(pls, pen, profile.ink_cap, profile.ink_cell_mm)
+        job = uuid.uuid4().hex
+        jdir = self.work / "jobs" / job
+        jdir.mkdir(parents=True)
+        stats = write_gcode(pls, str(jdir / "plot.gcode"), profile, paper_height=ph, paper_width=pw,
+                            comment=f"composed sheet: {len(keys)} photos on {pw:g} x {ph:g} mm")
+        stats["ink_removed_pct"] = round(ink["ink_removed_pct"], 1)
+        write_svg(pls, str(jdir / "plot.svg"), pw, ph, pen)
+        meta = {"style": "compose", "params": {"paper": paper, "items": req.get("items")},
+                "profile": req.get("profile"), "stats": stats}
+        (jdir / "plot.json").write_text(json.dumps(meta, indent=1, default=str))
+        return {"job": job, "stats": stats,
+                "files": {ext: f"/api/file/{job}/plot.{ext}" for ext in ("gcode", "svg", "json")}}
 
     def suggest(self, req):
         """Optimise string-art tone settings for the uploaded photo."""
@@ -299,6 +370,8 @@ def make_handler(app):
                     self._send(200, (HERE / "ui_index.html").read_bytes(), "text/html; charset=utf-8")
                 elif self.path.split("?")[0] in ("/layout", "/layout.html"):
                     self._send(200, (HERE / "ui_layout.html").read_bytes(), "text/html; charset=utf-8")
+                elif self.path.split("?")[0] in ("/compose", "/compose.html"):
+                    self._send(200, (HERE / "ui_compose.html").read_bytes(), "text/html; charset=utf-8")
                 elif parts == ["api", "jobs"]:
                     self._send(200, app.jobs())
                 elif parts == ["api", "presets", "scribble"]:
@@ -337,6 +410,10 @@ def make_handler(app):
                     self._send(200, app.layout_export(json.loads(body)))
                 elif self.path == "/api/suggest":
                     self._send(200, app.suggest(json.loads(body)))
+                elif self.path == "/api/compose/item":
+                    self._send(200, app.compose_item(json.loads(body)))
+                elif self.path == "/api/compose/export":
+                    self._send(200, app.compose_export(json.loads(body)))
                 elif self.path.startswith("/api/mask/"):
                     self._send(200, app.save_mask(self.path.rsplit("/", 1)[1], body))
                 else:

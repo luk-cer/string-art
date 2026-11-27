@@ -43,6 +43,7 @@ class HatchConfig:
     clahe: float = 0.0
     vignette: float = 0.0
     max_darkness: float = 1.0
+    tone: float = 1.0                # overall darkness: <1 = lighter picture, fewer lines
     edge_boost: float = 0.0
     # hatching
     cell_mm: float = 0.25             # field / occupancy raster resolution
@@ -490,4 +491,4 @@ def _prepare_rect(image_path, cfg, size):
     if cfg.clahe > 0:
         from skimage.exposure import equalize_adapthist
         g = equalize_adapthist(g, kernel_size=max(8, size // 8), clip_limit=cfg.clahe)
-    return (1 - g) * cfg.max_darkness, None, np.ones_like(g, dtype=bool), (x, y, w, h)
+    return (1 - g) * cfg.max_darkness * cfg.tone, None, np.ones_like(g, dtype=bool), (x, y, w, h)

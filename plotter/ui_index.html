@@ -83,7 +83,8 @@ main{display:grid;grid-template-rows:auto 1fr auto;min-width:0}
 <aside>
   <div class="scroll">
     <h1>Plotter preview</h1>
-    <a href="/layout" style="font-size:12px;color:var(--accent);text-decoration:none">Sheet layout: combine G-codes on one page →</a>
+    <a href="/compose" style="font-size:12px;color:var(--accent);text-decoration:none;display:block">Compose: several photos on one sheet, each solved for its frame →</a>
+    <a href="/layout" style="font-size:12px;color:var(--accent);text-decoration:none;display:block">Sheet layout: combine finished G-codes on one page →</a>
 
     <h2>Photo</h2>
     <div class="drop" id="drop">Drop a photo here or <u>choose a file</u>
@@ -165,6 +166,7 @@ const COMMON = [
   {k:"pen_mm", label:"Pen width", unit:"mm", min:0.05, max:1.0, step:0.05, v:0.3},
   {k:"padding_mm", label:"Padding", unit:"mm", min:0, max:40, step:1, v:10},
   {k:"diameter_mm", label:"Size on paper (0 = fit)", unit:"mm", min:0, max:400, step:5, v:0, not:["radon"]},
+  {k:"tone", label:"Darkness (lower = lighter, sparser lines)", min:0.2, max:1.5, step:0.05, v:1, not:["radon"]},
 ];
 // What each setting does. Key "style:param" overrides plain "param".
 const HELP = {
@@ -173,6 +175,7 @@ const HELP = {
   portrait: "Turn the paper upright (tall) instead of landscape.",
   pen_mm: "Your pen's line width. The algorithms model real ink with it: a wider pen reaches darkness with fewer lines.",
   padding_mm: "Blank margin kept around the drawing on every side.",
+  tone: "Overall darkness of the drawing. Every style aims for the photo's darkness × this, so 0.6 gives a lighter picture with fewer, sparser lines (and a shorter plot); above 1 pushes darker. Scribble: scales every tone mode and the legacy hatching ink limit; contour lines follow edges and stay.",
   diameter_mm: "How big the drawing will be on paper: circle diameter, or the longer side of a rectangle. 0 = as big as fits inside the padding. Render at the size you will plot: line density and darkness are computed for this size and the pen width, so shrinking a finished drawing later (e.g. on the layout page) makes it darker.",
 
   // string art

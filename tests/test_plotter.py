@@ -48,6 +48,28 @@ def test_ink_cap_limits_overdraw_and_keeps_fixed():
     assert kept == [] and st["ink_removed_pct"] == 100
 
 
+def test_compose_item_lands_in_its_frame_and_tone_thins(tmp_path):
+    from PIL import Image
+    from plotter.ui import App
+    yy, xx = np.mgrid[:300, :300]
+    img = (255 * (0.2 + 0.6 * (xx / 300))).astype(np.uint8)          # gradient, dark on the left
+    Image.fromarray(img).save(tmp_path / "g.png")
+    app = App(tmp_path / "work")
+    up = app.upload((tmp_path / "g.png").read_bytes())
+    lengths = []
+    for tone in (1.0, 0.5):
+        r = app.compose_item({"image": up["id"], "style": "hatch", "shape": "circle",
+                              "frame": {"x": 30, "y": 50, "w": 60, "h": 60}, "crop": [0, 0, 300, 300],
+                              "pen_mm": 0.3, "tone": tone, "params": {}})
+        p = np.array([c for pl in r["polylines"] for c in pl]).reshape(-1, 2)
+        assert p[:, 0].min() >= 29.9 and p[:, 0].max() <= 90.1 and p[:, 1].min() >= 49.9 and p[:, 1].max() <= 110.1
+        lengths.append(r["stats"]["draw_m"])
+    assert lengths[1] < 0.8 * lengths[0]                                   # lighter = fewer lines
+    out = app.compose_export({"paper": {"w": 210, "h": 297}, "pen_mm": 0.3, "profile": {},
+                              "parts": [{"key": r["key"], "dx": 10, "dy": 0}]})
+    assert out["stats"]["draw_mm"] > 0
+
+
 def test_scribble_size_and_dpi_set_working_resolution(tmp_path):
     from PIL import Image
     from plotter import scribble as scr
