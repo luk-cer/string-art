@@ -33,6 +33,26 @@ def test_ink_saturates_and_stops():
     assert cov.max() < 0.95                      # no solid black blob
 
 
+def test_importance_mask_lines_up_and_weights(tmp_path):
+    from PIL import Image
+    from plotter.importance import importance_map
+    photo = Image.new("L", (400, 300), 128)
+    photo.save(tmp_path / "p.png")
+    mask = Image.new("L", (400, 300), 0)
+    mask.paste(255, (250, 100, 300, 150))                 # painted square, source pixels
+    mask.save(tmp_path / "m.png")
+    m, info = importance_map(str(tmp_path / "p.png"), (100, 0, 300, 300), 60, face=False,
+                             mask_path=str(tmp_path / "m.png"))
+    assert info["painted"] and m.shape == (60, 60)
+    # square (250..300, 100..150) inside crop x 100..400 -> grid (150..200)/5 = 30..40, y 20..30
+    assert m[25, 35] > 0.8 and m[25, 10] < 0.05 and m[50, 35] < 0.05
+
+    cfg = sa.StringArtConfig(importance=3.0, face_detect=False, importance_mask=str(tmp_path / "m.png"),
+                             crop=(100, 0, 300, 300), edge_boost=0)
+    _, w, _, _ = sa.prepare_target(str(tmp_path / "p.png"), cfg, 60)
+    assert w[25, 35] > 3.0 and abs(w[25, 10] - 1.0) < 0.1
+
+
 def test_refine_lowers_error_and_chains_all_lines():
     from dataclasses import replace
     size = 50

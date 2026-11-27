@@ -42,6 +42,7 @@ def cmd_stringart(args):
         crop=tuple(args.crop) if args.crop else None,
         min_lines=args.min_lines, chords=args.chords, dashed=args.dashed, gap_tone=args.gap_tone,
         taper=args.taper, dash_period_mm=args.dash_period, refine=args.refine,
+        importance=args.importance, face_detect=not args.no_faces, importance_mask=args.importance_mask,
     )
     if args.auto:
         from dataclasses import replace
@@ -219,6 +220,11 @@ def main(argv=None):
                    help="one unbroken path (thread-like); default lifts the pen when stuck")
     s.add_argument("--frame", action="store_true", help="also draw the circle outline")
     s.add_argument("--min-lines", type=int, default=0, help="keep drawing until this many lines")
+    s.add_argument("--importance", type=float, default=2.0,
+                   help="extra likeness weight on faces/eyes/mouth and painted areas (0 = off)")
+    s.add_argument("--no-faces", action="store_true", help="don't detect faces (use only --importance-mask)")
+    s.add_argument("--importance-mask", default=None,
+                   help="grayscale image the size of the photo, white = important")
     s.add_argument("--refine", type=int, default=10,
                    help="rounds of removing/re-adding lines after the greedy solve (0 = off)")
     s.add_argument("--chords", default="straight", choices=["straight", "poincare", "warp"],

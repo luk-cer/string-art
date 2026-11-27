@@ -78,6 +78,36 @@ class App:
             raise FileNotFoundError(uid)
         return p
 
+    # -- importance (string art) ---------------------------------------------
+    def mask_path(self, uid):
+        return self.image_path(uid).with_name(f"{uid}_mask.png")
+
+    def save_mask(self, uid, data):
+        """Painted importance mask (PNG, white = important). An all-black mask deletes it."""
+        p = self.mask_path(uid)
+        im = Image.open(io.BytesIO(data)).convert("L")
+        if not np.asarray(im).any():
+            p.unlink(missing_ok=True)
+            return {"mask": False}
+        im.save(p)
+        return {"mask": True}
+
+    def face_map(self, uid):
+        """Detected faces as a PNG importance map (grayscale, max 512 px) for the overlay."""
+        from .importance import source_map
+        m, info = source_map(self.image_path(uid), face=True, mask_path=None)
+        im = Image.fromarray((m * 255).astype("uint8"))
+        im.thumbnail((512, 512), Image.Resampling.BILINEAR)
+        buf = io.BytesIO()
+        im.save(buf, "PNG")
+        return buf.getvalue(), info
+
+    def _with_mask(self, params, uid):
+        p = self.mask_path(uid)
+        if p.exists():
+            params["importance_mask"] = str(p)
+        return params
+
     # -- render --------------------------------------------------------------
     def render(self, req):
         style = req.get("style")
@@ -99,6 +129,8 @@ class App:
                 params["hatch_angles"] = [[float(v) for v in a.split(":")] for a in ha.split(",") if ":" in a]
             if params.get("max_side") in (0, "0"):
                 params["max_side"] = None
+        if style == "stringart":
+            self._with_mask(params, req["image"])
         cfg = pipeline.config_from_dict(cls, params)
         profile = pipeline.config_from_dict(PlotterProfile, req.get("profile") or {})
 
@@ -137,6 +169,7 @@ class App:
         params = dict(req.get("params") or {})
         if req.get("crop"):
             params["crop"] = req["crop"]
+        self._with_mask(params, req["image"])
         cfg = pipeline.config_from_dict(sa.StringArtConfig, params)
         img = self.image_path(req["image"])
         with self.lock:
@@ -267,6 +300,9 @@ def make_handler(app):
                     from dataclasses import asdict
                     from .scribble import ScribbleConfig, PRESETS
                     self._send(200, {"defaults": asdict(ScribbleConfig()), "presets": PRESETS})
+                elif parts[:2] == ["api", "facemap"] and len(parts) == 3:
+                    png, info = app.face_map(parts[2])
+                    self._send(200, png, "image/png", {"X-Faces": str(info["faces"])})
                 elif parts[:2] == ["api", "image"] and len(parts) == 3:
                     self._send(200, app.image_path(parts[2]).read_bytes(), "image/png")
                 elif parts[:2] == ["api", "file"] and len(parts) == 4:
@@ -296,6 +332,8 @@ def make_handler(app):
                     self._send(200, app.layout_export(json.loads(body)))
                 elif self.path == "/api/suggest":
                     self._send(200, app.suggest(json.loads(body)))
+                elif self.path.startswith("/api/mask/"):
+                    self._send(200, app.save_mask(self.path.rsplit("/", 1)[1], body))
                 else:
                     self._send(404, {"error": "not found"})
             except Exception as e:  # noqa: BLE001

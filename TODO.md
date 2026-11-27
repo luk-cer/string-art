@@ -197,7 +197,7 @@ may cross itself; "pen held and squiggling" with momentum and random perturbatio
 | UI | `python -m plotter ui` | everything above, with help |
 | Old renders | `python -m plotter lines2gcode render.json` | |
 
-Tests: `uv run --with pytest pytest -q tests` (30 tests).
+Tests: `uv run --with pytest pytest -q tests` (31 tests).
 
 ---
 
@@ -242,7 +242,18 @@ Tests: `uv run --with pytest pytest -q tests` (30 tests).
       straight 0.704 → 0.721 (6 rounds), warp 0.717 → 0.747, dashed warp 0.823 → 0.867 (10) / 0.876 (40).
       Cost: +8 s solve, the same plot time (371 vs 369 min), pen lifts ~25 → ~60 (non-dashed).
       Features read better (eyes, nose, mouth). Next: annealing or swap moves if more is wanted.
-- [ ] Importance mask (face/eyes weighted higher): UI brush or face detection; also for hatching/scribble.
+- [x] **Importance mask** for string art (`plotter/importance.py`, `importance` default 2, `face_detect`,
+      `importance_mask`; CLI `--importance --no-faces --importance-mask`). The solver's error weight is
+      multiplied by 1 + importance × map. Map = detected faces (ellipse 0.5, mouth 0.8, eyes + brows 1.0)
+      plus a painted mask, max-combined and softly blurred, cropped like the target.
+      Detection: OpenCV YuNet (`plotter/models/*.onnx`, 232 KB, MIT). Haar cascades were tried first; they
+      missed tilted faces and 2 of 4 in a group photo and gave false faces on a drawing. YuNet found every
+      face with correct eye/mouth points and nothing on the drawing. Without OpenCV, only painting works.
+      UI: red overlay on the photo, "Paint important areas" brush (erase, size, clear); the mask is
+      stored next to the upload. Dashed warp portrait: face score 0.861 → 0.876 at 2 (0.887 at 8),
+      whole picture 0.851 → 0.851 (0.841 at 8).
+- [ ] Importance for hatching/scribble: those styles don't optimise an error, so it needs its own
+      meaning (e.g. finer spacing / more contour detail inside the mask).
 - [ ] Include `chords`/`dashed` in the optimiser search; optimiser progress + cancel in the UI.
 - [ ] Two pens / grey levels (e.g. 0.1 mm grey pass + 0.3 mm black pass).
 

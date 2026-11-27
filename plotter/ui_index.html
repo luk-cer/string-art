@@ -92,6 +92,12 @@ main{display:grid;grid-template-rows:auto 1fr auto;min-width:0}
     <div id="cropWrap">
       <canvas id="cropCanvas"></canvas>
       <div class="hint">Drag to move the square · drag its corner or scroll to resize · <a href="#" id="cropReset">auto</a></div>
+      <div class="hint" id="impBar" style="display:none">
+        <label><input type="checkbox" id="paintMode"> Paint important areas</label>
+        <label id="eraseWrap" style="display:none"><input type="checkbox" id="eraseMode"> erase</label>
+        <span id="brushWrap" style="display:none">· brush <input type="range" id="brush" min="1" max="12" value="4" style="width:70px;vertical-align:middle"></span>
+        · <a href="#" id="maskClear">clear paint</a> · <span id="faceInfo"></span>
+      </div>
     </div>
 
     <h2>Style</h2>
@@ -182,6 +188,8 @@ const HELP = {
   gap_min_mm: "Dashed lines: don't lift the pen for gaps shorter than this.",
   hatch_walls: "Hatch lines stop at contour lines: major = silhouettes and big shape edges, all = every contour line, none = hatch across.",
   hatch_major_px: "Scale at which an edge counts as major. 4 = big shapes, 6 = mostly the silhouette.",
+  importance: "How much more the solver cares about likeness in important areas (red in the photo above): weight ×(1 + this). Faces are found automatically (eyes and mouth count most); tick 'Paint important areas' under the photo to add your own. 2 sharpens the face at almost no cost elsewhere; higher takes lines from the background. 0 = off.",
+  face_detect: "Find faces, eyes and mouth in the photo (OpenCV YuNet) and mark them important. Works on tilted faces and groups. Untick to use only your painted areas.",
   refine: "After the line-by-line solve, go back over the whole drawing: remove lines that no longer help (early lines often become redundant) and add better ones, repeated this many rounds. 10 rounds add a few seconds and noticeably sharpen features; more rounds give a little more. Lines are then re-chained into strokes, so a plot has a few dozen pen lifts instead of ~25. Not used with 'one continuous path'.",
   min_lines: "Keep drawing the best available line until this many, even after the tone target is reached. Use when it stops too early; the result gets darker than the photo.",
   overshoot: "How strongly ink on areas lighter than the photo is penalised. Higher = cleaner highlights but fewer lines; lower = denser, darker.",
@@ -346,6 +354,8 @@ const STYLE_PARAMS = {
     {k:"contrast_clip", label:"Auto-contrast clip", unit:"%", min:0, max:10, step:0.5, v:1},
     {k:"clahe", label:"Local contrast", min:0, max:0.08, step:0.005, v:0},
     {k:"edge_boost", label:"Edge emphasis", min:0, max:5, step:0.25, v:1},
+    {k:"importance", label:"Importance (faces + painted areas)", min:0, max:8, step:0.5, v:2, redraw:true},
+    {k:"face_detect", label:"Find faces automatically", type:"check", v:true, redraw:true},
     {k:"vignette", label:"Fade background", min:0, max:1, step:0.05, v:0},
     {k:"min_skip", label:"Min nail skip", min:1, max:60, step:1, v:15},
     {k:"nail_spread_mm", label:"Nail spread", unit:"mm", min:0, max:5, step:0.25, v:1.5},
@@ -658,6 +668,7 @@ function persist(){
 let autoTimer = null;
 function changed(){
   persist();
+  if(S.image) drawCrop();                 // importance overlay follows its settings
   if($("auto").checked && S.image){ clearTimeout(autoTimer); autoTimer = setTimeout(render, 350); }
 }
 function changedProfile(){ persist(); }
@@ -686,7 +697,7 @@ async function upload(f){
   try{
     const r = await fetch("/api/upload", {method:"POST", body:f, headers:{"X-Filename":encodeURIComponent(f.name)}});
     const j = await r.json(); if(!r.ok) throw new Error(j.error);
-    S.image = j; cropForStyle(); setCropView();
+    S.image = j; cropForStyle(); setCropView(); resetImportance();
     cropImg.onload = () => { $("cropWrap").style.display = "block"; drawCrop(); };
     cropImg.src = j.url;
     drop.innerHTML = `${f.name} — <u>change</u>`;
@@ -716,6 +727,7 @@ function drawCrop(){
   cx.fillStyle = "#777"; cx.fillRect(0,0,W,H);
   cx.save(); cx.translate(-vx0*cropScale, -vy0*cropScale);
   cx.drawImage(cropImg, 0, 0, S.image.width*cropScale, S.image.height*cropScale);
+  drawImportance(S.image.width*cropScale, S.image.height*cropScale);
   cx.restore();
   const [x,y,w,h] = [(S.crop[0]-vx0)*cropScale, (S.crop[1]-vy0)*cropScale, S.crop[2]*cropScale, S.crop[3]*cropScale];
   cx.fillStyle = "rgba(0,0,0,.55)";
@@ -741,25 +753,100 @@ function cropForStyle(){
   if(freeCrop()) S.crop = [0, 0, S.image.width, S.image.height];
   else S.crop = S.image.crop.slice();
 }
+// ---------------------------------------------------------------- importance (string art)
+// Red overlay on the photo: detected faces (from the server) + what you paint.
+// The painted mask is kept at <= 600 px and sent to the server as a grayscale PNG.
+let faceTint = null, faceCount = null, maskCv = null, maskDirty = false, painting = false;
+const impOn = () => S.style === "stringart" && (S.params.stringart.importance || 0) > 0;
+function resetImportance(){
+  faceTint = null; faceCount = null; maskDirty = false;
+  const s = Math.min(1, 600 / Math.max(S.image.width, S.image.height));
+  maskCv = document.createElement("canvas");
+  maskCv.width = Math.round(S.image.width * s); maskCv.height = Math.round(S.image.height * s);
+  loadFaces();
+}
+async function loadFaces(){
+  const id = S.image.id;
+  try{
+    const r = await fetch(`/api/facemap/${id}`); if(!r.ok || !S.image || S.image.id !== id) return;
+    faceCount = +r.headers.get("X-Faces");
+    const bmp = await createImageBitmap(await r.blob());
+    const c = document.createElement("canvas"); c.width = bmp.width; c.height = bmp.height;
+    const g = c.getContext("2d"); g.drawImage(bmp, 0, 0);
+    const d = g.getImageData(0, 0, c.width, c.height), a = d.data;
+    for(let i = 0; i < a.length; i += 4){ const v = a[i]; a[i] = 255; a[i+1] = 40; a[i+2] = 40; a[i+3] = v * 0.55; }
+    g.putImageData(d, 0, 0); faceTint = c;
+    drawCrop();
+  }catch(e){ faceCount = null; }
+}
+function drawImportance(w, h){
+  const show = impOn();
+  $("impBar").style.display = S.style === "stringart" ? "block" : "none";
+  const pm = $("paintMode").checked;
+  $("eraseWrap").style.display = $("brushWrap").style.display = pm ? "inline" : "none";
+  cc.style.cursor = pm && show ? "crosshair" : "move";
+  $("faceInfo").textContent = !show ? "importance is 0 (off)"
+    : !S.params.stringart.face_detect ? "face finding off"
+    : faceCount == null ? "finding faces…" : faceCount ? `${faceCount} face${faceCount > 1 ? "s" : ""} found` : "no face found";
+  if(!show) return;
+  if(faceTint && S.params.stringart.face_detect) cx.drawImage(faceTint, 0, 0, w, h);
+  if(maskCv){ cx.globalAlpha = 0.5; cx.drawImage(maskCv, 0, 0, w, h); cx.globalAlpha = 1; }
+}
+function paintAt(px, py){
+  const g = maskCv.getContext("2d"), s = maskCv.width / S.image.width;
+  const r = (+$("brush").value / 100) * Math.max(maskCv.width, maskCv.height);
+  g.globalCompositeOperation = $("eraseMode").checked ? "destination-out" : "source-over";
+  const grad = g.createRadialGradient(px*s, py*s, 0, px*s, py*s, r);
+  grad.addColorStop(0, "rgba(255,40,40,1)"); grad.addColorStop(0.6, "rgba(255,40,40,.8)"); grad.addColorStop(1, "rgba(255,40,40,0)");
+  g.fillStyle = grad; g.beginPath(); g.arc(px*s, py*s, r, 0, Math.PI*2); g.fill();
+  maskDirty = true;
+}
+async function sendMask(){
+  if(!maskDirty || !S.image) return;
+  maskDirty = false;
+  const g = maskCv.getContext("2d"), d = g.getImageData(0, 0, maskCv.width, maskCv.height);
+  const out = document.createElement("canvas"); out.width = maskCv.width; out.height = maskCv.height;
+  const og = out.getContext("2d"), od = og.createImageData(out.width, out.height);
+  for(let i = 0; i < d.data.length; i += 4){ const v = d.data[i+3]; od.data[i] = od.data[i+1] = od.data[i+2] = v; od.data[i+3] = 255; }
+  og.putImageData(od, 0, 0);
+  const blob = await new Promise(res => out.toBlob(res, "image/png"));
+  const r = await fetch(`/api/mask/${S.image.id}`, {method:"POST", body:blob});
+  if(!r.ok){ $("stats").innerHTML = `<span class="err">Saving the painted mask failed</span>`; return; }
+  changed();
+}
+$("paintMode").onchange = () => drawCrop();
+$("maskClear").onclick = e => {
+  e.preventDefault(); if(!maskCv) return;
+  maskCv.getContext("2d").clearRect(0, 0, maskCv.width, maskCv.height); maskDirty = true; drawCrop(); sendMask();
+};
+
 let dragMode = null, dragStart = null;
 cc.onpointerdown = e => {
   const r = cc.getBoundingClientRect(), px = (e.clientX-r.left)/cropScale + cropView[0], py = (e.clientY-r.top)/cropScale + cropView[1];
+  if($("paintMode").checked && impOn() && maskCv){
+    painting = true; cc.setPointerCapture(e.pointerId); paintAt(px, py); drawCrop(); return;
+  }
   const [x,y,w,h] = S.crop, corner = 14/cropScale;
   dragMode = (Math.abs(px-(x+w)) < corner && Math.abs(py-(y+h)) < corner) ? "resize" : "move";
   dragStart = {px, py, crop:S.crop.slice()}; cc.setPointerCapture(e.pointerId);
 };
 cc.onpointermove = e => {
-  if(!dragMode) return;
+  if(!dragMode && !painting) return;
   const r = cc.getBoundingClientRect(), px = (e.clientX-r.left)/cropScale + cropView[0], py = (e.clientY-r.top)/cropScale + cropView[1];
+  if(painting){ paintAt(px, py); drawCrop(); return; }
   const [x,y,w,h] = dragStart.crop;
   if(dragMode === "move") S.crop = [x + px - dragStart.px, y + py - dragStart.py, w, h];
   else if(freeCrop()) S.crop = [x, y, px-x, py-y];
   else { const s = Math.max(px-x, py-y); S.crop = [x, y, s, s]; }
   clampCrop(); drawCrop();
 };
-cc.onpointerup = () => { if(dragMode){ dragMode = null; changed(); } };
+cc.onpointerup = () => {
+  if(painting){ painting = false; sendMask(); return; }
+  if(dragMode){ dragMode = null; changed(); }
+};
 cc.onwheel = e => {
   e.preventDefault();
+  if($("paintMode").checked && impOn()) return;
   const [x,y,w,h] = S.crop, f = e.deltaY > 0 ? 1.05 : 0.95, nw = w*f, nh = h*f;
   S.crop = [x - (nw-w)/2, y - (nh-h)/2, nw, nh]; clampCrop(); drawCrop();
   clearTimeout(autoTimer); autoTimer = setTimeout(changed, 400);

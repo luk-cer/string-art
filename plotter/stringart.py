@@ -46,6 +46,11 @@ class StringArtConfig:
     vignette: float = 0.0           # 0..1 fade target to white towards the rim (busy backgrounds)
     contrast_clip: float = 1.0      # percentile clip for auto-contrast
     edge_boost: float = 1.0         # extra error weight on edges (features)
+    # importance: extra error weight where likeness matters (detected faces/eyes/mouth and/or
+    # a painted mask, white = important): weight *= 1 + importance * map. 0 = off.
+    importance: float = 2.0
+    face_detect: bool = True
+    importance_mask: str | None = None
     stop_ratio: float = 0.0         # stop when best gain < ratio * first gain
     overshoot: float = 3.0          # penalty multiplier for ink over light areas (keeps highlights clean)
     continuous: bool = False        # True = single unbroken path like real thread
@@ -103,6 +108,10 @@ def prepare_target(image_path, cfg, size_px):
     e = np.asarray(blurred.filter(ImageFilter.FIND_EDGES), dtype=float)
     e = e / (np.percentile(e, 99) + 1e-6)
     weight = 1.0 + cfg.edge_boost * np.clip(e, 0, 1)
+    if getattr(cfg, "importance", 0) > 0:        # string art only (other styles share this function)
+        from .importance import importance_map
+        imp, _ = importance_map(image_path, box, size_px, cfg.face_detect, cfg.importance_mask)
+        weight *= 1.0 + cfg.importance * imp
 
     yy, xx = np.mgrid[:size_px, :size_px]
     c = (size_px - 1) / 2
