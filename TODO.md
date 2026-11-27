@@ -227,7 +227,13 @@ Tests: `uv run --with pytest pytest -q tests` (19 tests).
       Tried a tone-preserving adaptive dash period (longer where duty is near 0 or 1): −12% dashes, but a
       plain 12 mm period gives the same −13% at the same tone change, so not added. Fewer lifts = longer
       `dash_period_mm` (the slider already exists).
-- [ ] Poincaré fringe: minimum arc span (or penalty) so short rim-hugging arcs don't pile up.
+- [x] Poincaré fringe, investigated. **Finding:** short arcs are not the cause. The rim isn't over-inked
+      (0.347 vs target 0.336), and a minimum arc span for bent chords only lowers the score
+      (0.669 → 0.664 at 12% of the circle, 0.600 at 25%), so it was not added. The fringe is a
+      sunburst: a geodesic always meets the rim at 90°, so every line end points straight at the centre.
+      Gentler fixed bends score better and look calmer (bend 1.0: 0.669, 0.7: 0.683, 0.5: 0.688,
+      0.3: 0.691), but mixed bends (`warp`, 0.717) beat all of them. Use `warp`. `poincare` stays as
+      a look, not for likeness.
 - [ ] Refinement after greedy: try removing/swapping lines (local search / annealing), typically a large gain.
 - [ ] Importance mask (face/eyes weighted higher): UI brush or face detection; also for hatching/scribble.
 - [ ] Include `chords`/`dashed` in the optimiser search; optimiser progress + cancel in the UI.
