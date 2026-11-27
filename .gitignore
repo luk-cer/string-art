@@ -13,3 +13,9 @@ wheels/
 # plotter outputs
 out/
 *.gcode
+
+# hardware: STLs are build outputs or third-party downloads; keep only our sources
+*.stl
+hardware/extruh/
+hardware/pen-lift/*.f3d
+hardware/pen-lift/*.pdf
