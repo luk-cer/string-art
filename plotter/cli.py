@@ -118,7 +118,8 @@ def cmd_scribble(args):
          "simplify": "simplify_px", "join": "join_px", "white_cut": "white_cut",
          "hatch_mode": "hatch_mode", "momentum": "main_momentum", "smooth": "smooth_main",
          "hatch_fill": "hatch_fill_px", "ink_passes": "hatch_ink_passes", "density": "freehand_density",
-         "cleanup_mode": "cleanup_mode", "hatch_source": "hatch_source"}
+         "cleanup_mode": "cleanup_mode", "hatch_source": "hatch_source",
+         "hatch_base": "hatch_base", "base_credit": "hatch_base_credit"}
     keys = ["paper", "rotate", "max_side", "gradient_threshold", "cleanup_radius", "max_lines",
             "light_percentile", "hatch_max_length", "sampler", "workers", "seed"] + list(m)
     over = {m.get(k, k): getattr(args, k) for k in keys if getattr(args, k) is not None}
@@ -304,6 +305,12 @@ def main(argv=None):
                    help="legacy: original; clean: no U-turns/spirals/clumps, evenly spaced, fills flat dark "
                         "areas; ink: clean, but only adds the darkness the main lines haven't drawn; "
                         "freehand: hand-like looping scribble; squiggle: experimental maze curve")
+    c.add_argument("--hatch-base", choices=["none", "legacy"],
+                   help="legacy: draw legacy hatching first; the --hatch-mode layer then adds only the darkness "
+                        "contours + legacy hatching haven't drawn (gradient areas keep the legacy look, flat "
+                        "areas get tone)")
+    c.add_argument("--base-credit", type=float,
+                   help="0..1.5: how much legacy ink counts as tone (1 = as drawn, lower = more tone on top)")
     c.add_argument("--density", type=float, help="freehand: fraction of missing darkness to draw (default 0.55)")
     c.add_argument("--loops", type=float, nargs=2, metavar=("DARK", "LIGHT"),
                    help="freehand: loop radius in px for dark / light areas (default 4 10)")

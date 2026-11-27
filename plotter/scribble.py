@@ -79,6 +79,11 @@ class ScribbleConfig:
     hatch_clean_min_len: float = 6.0    # clean: drop hatch strokes shorter than this (px)
     hatch_threshold_shift: float = -0.1 # clean: start each hatch layer this much earlier (darker areas)
     hatch_ink_aware: bool = False       # same as hatch_mode="ink" (kept for scripts)
+    hatch_base: str = "none"            # none | legacy: draw legacy hatching first, then the chosen kind
+                                        # (clean/ink/freehand/squiggle) adds only the darkness that contours
+                                        # + legacy hatching haven't already drawn (no double counting)
+    hatch_base_credit: float = 1.0      # how much the legacy ink counts as tone (1 = as drawn; <1 = the tone
+                                        # layer draws more on top of legacy areas; 0 = ignore legacy ink)
     hatch_walls: str = "none"           # legacy/clean/ink: contours hatching stops at: none | major | all
     hatch_major_px: float = 4.0         # scale (px) at which an edge counts as major
     hatch_view_px: float = 2.0          # ink-aware: blur (px) at which ink and target are compared ("viewing distance")
@@ -694,21 +699,32 @@ class Scribble:
         return self
 
     def _ink_target(self, progress=None):
-        """Darkness still missing after the main lines, at viewing scale:
-        main-line ink is drawn at the real pen width on paper, and ink combines
-        like 1 - (1 - main)(1 - extra) = target  ->  extra = 1 - (1 - T)/(1 - M)."""
+        """Darkness still missing after everything drawn so far, at viewing scale:
+        ink is drawn at the real pen width on paper, and ink combines like
+        1 - (1 - drawn)(1 - extra) = target  ->  extra = 1 - (1 - T)/(1 - D).
+        Drawn = main (contour) lines, plus a legacy base hatch if there is one
+        (weighted by hatch_base_credit). Returns the contour-only ink as the
+        third value: walls are built from contours, never from hatching."""
         from scipy.ndimage import gaussian_filter
         c = self.cfg
         mm_per_px = paper_fit(*self.pix.shape, c)[0]
         pen_px = c.pen_mm / mm_per_px
-        main_ink = ink_coverage(self.lines, self.pix.shape, pen_px)
+        n_main = getattr(self, "n_main", len(self.lines))
+        main_ink = ink_coverage(self.lines[:n_main], self.pix.shape, pen_px)
+        drawn = main_ink
+        base = self.lines[n_main:]
+        if base:
+            base_ink = ink_coverage(base, self.pix.shape, pen_px) * float(c.hatch_base_credit)
+            drawn = 1 - (1 - main_ink) * (1 - np.clip(base_ink, 0, 1))
+            self.base_ink = base_ink
         v = c.hatch_view_px
         T = np.clip(gaussian_filter(self.ipix, v), 0, 0.97)
-        M = np.clip(gaussian_filter(main_ink, v), 0, 0.97)
+        M = np.clip(gaussian_filter(drawn, v), 0, 0.97)
         darkness = np.clip(1 - (1 - T) / (1 - M), 0, 1)
         self.main_ink, self.hatch_target = main_ink, darkness
         if progress:
-            progress(f"  ink-aware: pen {pen_px:.2f} px, main lines cover {main_ink.mean()*100:.0f}% of the page, "
+            extra = f" + legacy hatch {self.base_ink.mean()*100:.0f}%" if base else ""
+            progress(f"  ink-aware: pen {pen_px:.2f} px, main lines cover {main_ink.mean()*100:.0f}%{extra} of the page, "
                      f"still needed {darkness.mean()*100:.0f}% on average")
         return darkness, pen_px, main_ink
 
@@ -810,7 +826,10 @@ class Scribble:
                          min_len_spacings=2.0, tone_smooth_mm=1.0, seed_margin=0.03, overrun=0.05,
                          layer_thresholds=tuple(max(0.0, t + c.hatch_threshold_shift) for _, t in angles))
         darkness = self.ipix
-        if c.hatch_ink_aware or c.hatch_mode == "ink":
+        # on a legacy base, clean = ink: "add only what's missing" needs the calibrated coverage path
+        # (a raw residual rarely reaches the layer thresholds, so plain clean would draw almost nothing)
+        ink_aware = c.hatch_ink_aware or c.hatch_mode == "ink" or self._has_base()
+        if ink_aware:
             darkness, pen_px, main_ink = self._ink_target(progress)
             hc.tone_model = "coverage"           # spacing from real pen coverage of the remaining tone
             hc.pen_mm = pen_px                   # cell units = px
@@ -833,7 +852,7 @@ class Scribble:
             return out
 
         new = hatch_pass(darkness)
-        if (c.hatch_ink_aware or c.hatch_mode == "ink") and c.hatch_ink_passes > 1:
+        if ink_aware and c.hatch_ink_passes > 1:
             # Streamline hatching never reaches its nominal density (lines stop short of
             # each other, short strokes are dropped), so measure what was achieved and
             # ask for proportionally more where it fell short: per pixel, raise the
@@ -853,6 +872,10 @@ class Scribble:
             progress(f"  clean hatch lines: {len(new)}")
         return self
 
+    def _has_base(self):
+        c = self.cfg
+        return c.hatch_base == "legacy" and c.hatch_mode != "legacy"
+
     def run(self, progress=None):
         if self.cfg.seed is not None:
             np.random.seed(self.cfg.seed)
@@ -863,6 +886,8 @@ class Scribble:
             self.magnitude[:] = 0
         self.n_main = len(self.lines)
         if self.cfg.hatch:
+            if self._has_base():
+                self.add_crosshatching(progress)      # legacy base; the tone kind below fills what's missing
             if self.cfg.hatch_mode == "squiggle":
                 self.add_squiggle(progress)
             elif self.cfg.hatch_mode == "freehand":

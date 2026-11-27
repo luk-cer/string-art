@@ -151,6 +151,11 @@ may cross itself; "pen held and squiggling" with momentum and random perturbatio
 - [x] Black pockets fixed: the look-ahead saw darkness behind walls, so a hand trapped in a small walled
       pocket never left. Too-black pixels 2.3% → 1.1% (all walls 7.2% → 2.5%).
 - [x] No double counting: every squiggle/ink mode draws only the darkness the contour lines haven't.
+- [x] **Legacy base + tone layer** (`hatch_base=legacy`, `hatch_base_credit`): legacy hatching first, then
+      ink/clean/freehand/squiggle add only the darkness contours + legacy haven't drawn. **Why:** legacy looks
+      good in gradient-rich areas but adds no tone in flat ones. Walls stay contour-only. On a base, clean
+      is routed through ink (a raw residual never reaches clean's layer thresholds). Test photo (circle,
+      0.15 mm): tone error legacy 0.163 → legacy+ink 0.042, +squiggle 0.049, +freehand 0.074.
 
 ### 1.7 Preview UI
 

@@ -164,3 +164,28 @@ def test_stringart_arcs_stay_inside_and_dashes_taper():
     t = np.tile(np.linspace(0, 1, 50), (50, 1))
     duty = sa.drawable_mask(t, cfg)[25]
     assert duty[0] == 0 and duty[-1] == 1 and np.all(np.diff(duty) >= -1e-6)   # fades in monotonically
+
+
+def test_legacy_base_blend_does_not_double_count(tmp_path):
+    from plotter.scribble import preset, Scribble, load_gray
+    p = _img(tmp_path)
+    res = {}
+    for base in ("none", "legacy"):
+        cfg = preset("app5", max_lines=300, workers=1, hatch_mode="ink", hatch_base=base)
+        sc = Scribble(load_gray(p, cfg), cfg)
+        sc.run()
+        res[base] = sc
+    a, b = res["none"], res["legacy"]
+    # contours identical, walls/contour ink built from contours only
+    assert a.lines[:a.n_main] == b.lines[:b.n_main]
+    assert np.allclose(a.main_ink, b.main_ink)
+    # legacy ink is credited: less is still needed where the legacy hatch drew
+    assert b.hatch_target.sum() < a.hatch_target.sum()
+    busy = b.base_ink > 0.3
+    if busy.any():
+        assert b.hatch_target[busy].mean() < a.hatch_target[busy].mean()
+    # every tone kind accepts the base
+    for mode in ("clean", "freehand", "squiggle"):
+        cfg = preset("app5", max_lines=200, workers=1, hatch_mode=mode, hatch_base="legacy")
+        sc = Scribble(load_gray(p, cfg), cfg)
+        assert len(sc.run()) > sc.n_main
