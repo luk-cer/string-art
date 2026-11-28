@@ -134,9 +134,15 @@ class ScribbleConfig:
     # would get more than this many covers of ink per 0.5 mm (true pen width, final size). 0 = off.
     legacy_ink_cap: float = 1.5
     # overall darkness: <1 = lighter picture, fewer tone lines (scales the tone target of every
-    # tone mode and legacy_ink_cap; contour lines follow edges and are not affected)
+    # tone mode and legacy_ink_cap; contour spacing is divided by it, see contour_spacing_mm)
     tone: float = 1.0
-    crop: tuple | None = None           # (x, y, w, h) in source pixels
+    # contour spacing on paper. contour_spacing_mm: largest gap cleared around a contour line (light
+    # areas; dark areas pack closer), in mm at the final size - overrides cleanup_radius (px), 0 = use it.
+    # contour_min_gap: closest two contour lines may run, in pen widths (0 = original, down to 1 px).
+    # tone < 1 also widens the spacing (gap / tone), so a lighter picture gets fewer contour lines.
+    contour_spacing_mm: float = 0.0
+    contour_min_gap: float = 0.0
+    crop: tuple | None = None          # (x, y, w, h) in source pixels
     shape: str = "rect"                 # rect | circle (centred square, lines clipped to the inscribed circle)
     frame: bool = False                 # circle: also draw the circle outline
     # paper / output
@@ -511,6 +517,14 @@ class Scribble:
             s2 = self.magnitude.sum()
             if s2 > 0:
                 self.magnitude /= s2
+        # contour spacing in pixels at the final drawing size
+        mm_per_px = paper_fit(*self.pix.shape, c)[0]
+        r = c.contour_spacing_mm / mm_per_px if c.contour_spacing_mm > 0 else c.cleanup_radius
+        tone = c.tone if c.tone > 0 else 1.0
+        self.contour_rmin = c.contour_min_gap * c.pen_mm / mm_per_px / tone
+        r = max(r / tone, self.contour_rmin, 1.0)
+        active = c.contour_spacing_mm > 0 or c.contour_min_gap > 0 or tone != 1.0
+        self.contour_r = int(np.ceil(r - 1e-9)) if active else c.cleanup_radius   # unchanged when off
         self.tracer = _Tracer(self.ipix, d)
         self.gk_main = w2 if c.legacy_gradient_sum else None
         self._disks = {}
@@ -538,6 +552,9 @@ class Scribble:
             ratio = np.where(h < t, 1.0, 1 - factor)
             sr = (1 + ratio * (max_radius - 1)).astype(np.int64)     # int() truncation, values >= 0
             r[inb] = np.maximum(0, np.minimum(sr, max_radius))
+            rmin = getattr(self, "contour_rmin", 0)
+            if rmin > 0:                     # keep contour lines at least this far apart (pen widths)
+                r[inb] = np.maximum(r[inb], min(int(np.ceil(rmin)), max_radius))
         return r
 
     def _zero_magnitude(self, xs, ys, radii):
@@ -601,11 +618,11 @@ class Scribble:
             arr = np.asarray(line, dtype=np.int64)
             self.gx[arr[:, 0], arr[:, 1]] = 0
             self.gy[arr[:, 0], arr[:, 1]] = 0
-            self._quadrant_cleanup(line, self.magnitude, self.cfg.cleanup_radius, True)
+            self._quadrant_cleanup(line, self.magnitude, self.contour_r, True)
             return
         arr = np.asarray(line, dtype=np.int64)
         xs, ys = arr[:, 0], arr[:, 1]
-        radii = self._adaptive_radii(xs, ys, self.cfg.cleanup_radius)
+        radii = self._adaptive_radii(xs, ys, self.contour_r)
         self.gx[xs, ys] = 0
         self.gy[xs, ys] = 0
         self._zero_magnitude(xs, ys, radii)

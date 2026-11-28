@@ -175,7 +175,7 @@ const HELP = {
   portrait: "Turn the paper upright (tall) instead of landscape.",
   pen_mm: "Your pen's line width. The algorithms model real ink with it: a wider pen reaches darkness with fewer lines.",
   padding_mm: "Blank margin kept around the drawing on every side.",
-  tone: "Overall darkness of the drawing. Every style aims for the photo's darkness × this, so 0.6 gives a lighter picture with fewer, sparser lines (and a shorter plot); above 1 pushes darker. Scribble: scales every tone mode and the legacy hatching ink limit; contour lines follow edges and stay.",
+  tone: "Overall darkness of the drawing. Every style aims for the photo's darkness × this, so 0.6 gives a lighter picture with fewer, sparser lines (and a shorter plot); above 1 pushes darker. Scribble: scales every tone mode and the legacy hatching ink limit, and widens the contour line spacing (gap ÷ darkness), so contours thin out too.",
   diameter_mm: "How big the drawing will be on paper: circle diameter, or the longer side of a rectangle. 0 = as big as fits inside the padding. Render at the size you will plot: line density and darkness are computed for this size and the pen width, so shrinking a finished drawing later (e.g. on the layout page) makes it darker.",
 
   // string art
@@ -250,7 +250,9 @@ const HELP = {
   main_lines: "Trace the contour lines that follow the image's iso-brightness lines. Off = tone layer only.",
   gradient_threshold: "Ignore gradients weaker than this. Higher = contour lines only on stronger edges.",
   cleanup_mode: "How much space is cleared around each traced line. adaptive (c_v25) = circles sized by tone and texture; quadrant (app5/7) = boxes sized by the darkest nearby pixel.",
-  cleanup_radius: "Maximum gap cleared around a line (px). Bigger = sparser contour lines.",
+  cleanup_radius: "Maximum gap cleared around a line, in image pixels (used when the mm spacing is 0). Bigger = sparser contour lines.",
+  contour_spacing_mm: "Largest gap cleared around each contour line, in mm on the final paper (light areas; dark areas pack closer). Same look at any size and resolution. Bigger = fewer contour lines. The Darkness slider widens it further (gap ÷ darkness).",
+  contour_min_gap: "Closest two contour lines may run, in pen widths. 1 = lines never overlap; 0 = original (as close as 1 pixel, which overlaps with a thick pen).",
   max_lines: "Maximum number of contour lines traced.",
   "scribble:max_lines": "Maximum number of contour lines traced.",
   main_max_steps: "Longest a single contour line may run, in pixels.",
@@ -419,7 +421,9 @@ const STYLE_PARAMS = {
     {k:"main_lines", label:"Draw contour lines", type:"check", v:true},
     {k:"gradient_threshold", label:"Gradient threshold", min:0, max:0.3, step:0.01, v:0.05},
     {k:"cleanup_mode", label:"Line spacing rule", type:"select", opts:["adaptive","quadrant"], v:"adaptive"},
-    {k:"cleanup_radius", label:"Line spacing (max gap)", unit:"px", min:1, max:20, step:1, v:4},
+    {k:"contour_spacing_mm", label:"Line spacing on paper (max gap, 0 = px)", unit:"mm", min:0, max:8, step:0.1, v:1.0},
+    {k:"cleanup_radius", label:"Line spacing (max gap)", unit:"px", min:1, max:20, step:1, v:4, when:P => !P.contour_spacing_mm},
+    {k:"contour_min_gap", label:"Min gap between contour lines", unit:"pens", min:0, max:4, step:0.25, v:1},
     {k:"max_lines", label:"Max contour lines", min:100, max:30000, step:100, v:10000},
     {k:"main_max_steps", label:"Max line length", unit:"px", min:100, max:10000, step:100, v:1000},
     {k:"main_momentum", label:"Momentum (calmer lines)", min:0, max:0.95, step:0.05, v:0},
@@ -650,7 +654,7 @@ function buildControls(){
 }
 // scribble presets come from the server (plotter/scribble.py PRESETS) so they never drift
 let _presets = null;
-const KEEP_ON_PRESET = ["preset","max_side","dpi","legacy_ink_cap","rotate","shape","frame","workers","seed","simplify_px","join_px",
+const KEEP_ON_PRESET = ["preset","max_side","dpi","contour_spacing_mm","contour_min_gap","legacy_ink_cap","rotate","shape","frame","workers","seed","simplify_px","join_px",
   "hatch_mode","main_lines","freehand_density","freehand_loop_min","freehand_loop_max","freehand_advance",
   "freehand_momentum","freehand_noise","freehand_tone_jitter","freehand_wobble","freehand_flow_pull","freehand_stroke_px","freehand_walls","freehand_major_px","hatch_view_px","hatch_ink_passes","hatch_spacing_min_px","hatch_spacing_max_px","hatch_fill_px","hatch_max_turn_deg","main_momentum","smooth_main"];
 async function applyPreset(name){
@@ -666,6 +670,8 @@ async function applyPreset(name){
       else if(p.type === "text") x = String(x);
       P[p.k] = x;
     }
+    // presets give the spacing in pixels at ~100 dpi: carry it over to mm on paper
+    if(P.contour_spacing_mm && v.cleanup_radius) P.contour_spacing_mm = Math.round(v.cleanup_radius * 2.54) / 10;
     P.preset = name;
     persist(); buildControls(); changed();
   }catch(e){ $("stats").innerHTML = `<span class="err">Preset load failed: ${e.message}</span>`; }

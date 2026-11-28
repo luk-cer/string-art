@@ -186,6 +186,8 @@ class App:
             params.update(shape=shape, size_mm=max(w, h), diameter_mm=max(w, h), rotate="none")
             if not params.get("dpi"):
                 params["dpi"] = 100
+            params.setdefault("contour_spacing_mm", 1.0)     # contour spacing in mm on paper
+            params.setdefault("contour_min_gap", 1.0)
         elif style == "hatch":
             params.update(shape="rect" if shape == "rect" else "circle", diameter_mm=min(w, h))
         else:

@@ -82,6 +82,19 @@ def test_scribble_size_and_dpi_set_working_resolution(tmp_path):
     assert small.shape == (125, 250)                     # half the size -> half the pixels, same mm/px
 
 
+def test_scribble_contour_spacing_in_mm_and_tone():
+    from plotter import scribble as scr
+    pix = np.ones((200, 200)) * 0.5
+    def radius(**kw):
+        s = scr.Scribble(pix.copy(), scr.ScribbleConfig(size_mm=50.8, pen_mm=0.5, **kw)).preprocess()
+        return s.contour_r, s.contour_rmin                # 50.8 mm / 200 px = 0.254 mm/px
+    assert radius() == (4, 0)                             # off: the original cleanup_radius
+    assert radius(contour_spacing_mm=1.016)[0] == 4       # 1.016 mm = 4 px
+    assert radius(contour_spacing_mm=1.016, tone=0.5)[0] == 8   # lighter -> twice the gap
+    r, rmin = radius(contour_spacing_mm=0.254, contour_min_gap=1.0)
+    assert abs(rmin - 0.5 / 0.254) < 1e-9 and r == 2      # never closer than one pen width
+
+
 def test_importance_mask_lines_up_and_weights(tmp_path):
     from PIL import Image
     from plotter.importance import importance_map
