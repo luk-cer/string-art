@@ -63,8 +63,11 @@ figcaption{font-size:12px;color:var(--muted);text-align:center}
   <h2>2. Size and line width</h2>
   <div class="row"><label>Printed size (longer side)</label><input type="number" id="size" min="20" max="215" step="1"></div>
   <div class="row"><label>Line width</label><input type="number" id="width" min="0.4" max="2" step="0.05"></div>
-  <div class="hint">Line width: what the printer lays down (0.4 nozzle: 0.6–0.8 mm prints cleanly). The drawing's line spacing must be
-    designed for it, so render it again with pen = line width at the printed size.</div>
+  <div class="row"><label>Printer spreads lines by</label><input type="number" id="spread" min="0" max="0.6" step="0.05"></div>
+  <div class="hint">Line width: how wide the lines should come out (0.4 nozzle: 0.6–0.8 mm). Printed lines squash wider than
+    modelled: print a test, measure a line with calipers and enter how much wider it came out. The lines are then modelled that
+    much narrower, and the drawing is solved for the width they really end up, so spacing and darkness stay right.</div>
+  <div id="widthInfo" class="hint"></div>
   <div id="fitWarn" class="warn"></div>
   <div class="btns"><button class="btn ghost" id="rerenderBtn" disabled>Render again for printing</button></div>
 
@@ -137,6 +140,11 @@ for(const k of Object.keys(CFG_KEYS)){
 }
 showMode();
 $("width").value = P.width;
+P.spread = store.get("spread", 0.15); $("spread").value = P.spread;
+$("spread").onchange = e => { P.spread = Math.max(0, +e.target.value || 0); store.set("spread", P.spread); check(); };
+const MIN_FEATURE = 0.42;
+// width the lines really end up: modelled width (never under what the slicer prints) + spread
+const printedW = () => Math.max(P.width, MIN_FEATURE + P.spread);
 $("width").onchange = e => { P.width = +e.target.value || 0.7; store.set("width", P.width); check(); };
 $("size").onchange = e => { P.size = +e.target.value; check(); };
 
@@ -167,16 +175,19 @@ function check(){
   const s = P.src, j = P.job;
   $("buildBtn").disabled = P.busy || !s;
   $("rerenderBtn").disabled = true; $("fitWarn").textContent = ""; $("selInfo").textContent = "";
+  const pw = printedW(), mw = pw - P.spread;
+  $("widthInfo").textContent = `Modelled ${mw.toFixed(2)} mm → prints about ${pw.toFixed(2)} mm` +
+    (pw > P.width + 1e-6 ? ` (can't model thinner than ${MIN_FEATURE} mm)` : "") + ".";
   if(!s) return;
   const cur = Math.max(s.w, s.h), scale = P.size / cur, pen = +j.pen_mm || 0;
   $("selInfo").textContent = `${s.w.toFixed(0)} × ${s.h.toFixed(0)} mm, ${(s.draw_mm/1000).toFixed(0)} m of line` + (pen ? `, rendered for a ${pen} mm pen` : "");
-  const resize = Math.abs(scale - 1) > 0.02, repen = pen && Math.abs(pen - P.width) > 0.04;
+  const resize = Math.abs(scale - 1) > 0.02, repen = pen && Math.abs(pen - pw) > 0.04;
   if(!resize && !repen) return;
-  const why = [resize && `size ${cur.toFixed(0)} → ${P.size} mm`, repen && `pen ${pen} → ${P.width} mm`].filter(Boolean).join(", ");
+  const why = [resize && `size ${cur.toFixed(0)} → ${P.size} mm`, repen && `pen ${pen} → ${pw.toFixed(2)} mm`].filter(Boolean).join(", ");
   if(s.rerender){
     $("rerenderBtn").disabled = P.busy;
     $("fitWarn").textContent = `Not designed for this print yet (${why}). "Render again for printing" fixes it; otherwise lines ` +
-      (repen && pen < P.width ? "merge into solid areas." : "are spaced wrong for the printed width.");
+      (repen && pen < pw ? "merge into solid areas." : "are spaced wrong for the printed width.");
   }else{
     $("fitWarn").textContent = `This drawing can't be rendered again (dropped file or older render): it will just be scaled (${why}), so line spacing won't match the printed width.`;
   }
@@ -186,9 +197,9 @@ $("rerenderBtn").onclick = async () => {
   P.busy = true; check(); setStats("<span>rendering for printing…</span>");
   try{
     const r = await fetch("/api/layout/rerender", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({job:j.job, scale:P.size / Math.max(s.w, s.h), pen_mm:P.width, name:j.label})});
+      body: JSON.stringify({job:j.job, scale:P.size / Math.max(s.w, s.h), pen_mm:printedW(), name:j.label})});
     const n = await r.json(); if(!r.ok) throw new Error(n.error);
-    P.job = {...j, job:n.job, pen_mm:P.width}; P.src = n; setStats("");
+    P.job = {...j, job:n.job, pen_mm:+printedW().toFixed(3)}; P.src = n; setStats("");
     $("selInfo").textContent = "";
     await buildJobs();
   }catch(e){ setStats(`<span class="err">Render failed: ${e.message}</span>`); }
@@ -200,7 +211,7 @@ $("buildBtn").onclick = async () => {
   try{
     const r = await fetch("/api/print3d/build", {method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({job:P.job.job, scale:P.size / Math.max(s.w, s.h),
-        cfg:{...P.cfg, colours:undefined, light_lines:P.cfg.colours === "light", line_width_mm:P.width}})});
+        cfg:{...P.cfg, colours:undefined, light_lines:P.cfg.colours === "light", line_width_mm:P.width, line_spread_mm:P.spread, min_feature_mm:MIN_FEATURE}})});
     const b = await r.json(); if(!r.ok) throw new Error(b.error);
     const i = b.info;
     const lt = P.cfg.colours === "light";
@@ -217,6 +228,7 @@ $("buildBtn").onclick = async () => {
     if(i.mode !== "open" && i.line_cover_pct > 60) warn.push(`<span class="err" title="Coverage follows how dark the photo is. Backlit, the glow comes from the gaps between lines: for a brighter piece lower the Darkness slider on the preview page and render again.">dark piece: lines cover ${i.line_cover_pct}%</span>`);
     setStats(`<span>${i.shape} <b>${i.size_mm[0]} × ${i.size_mm[1]} × ${i.size_mm[2]} mm</b></span>
       <span>swap at <b>Z ${i.swap_at_mm} mm</b></span>
+      <span>lines modelled <b>${i.model_width_mm}</b> → print ≈ <b>${i.printed_width_mm} mm</b></span>
       <span>${i.mode === "open" ? "white" : "plate"} <b>${i.plate_g} g</b> · ${i.mode === "open" ? "dark" : "lines"} <b>${i.lines_g} g</b></span>
       ${i.mode === "open" ? `<span>${i.pieces} piece${i.pieces === 1 ? "" : "s"} joined by <b>${i.bridges}</b> bridges (longest ${i.longest_bridge_mm} mm)</span>` : ""}
       <span>lines cover <b>${i.line_cover_pct}%</b></span> ${warn.join(" ")}
@@ -226,7 +238,7 @@ $("buildBtn").onclick = async () => {
   }catch(e){ setStats(`<span class="err">${e.message}</span>`); }
   P.busy = false; check();
 };
-buildJobs();
+buildJobs(); check();
 </script>
 </body>
 </html>

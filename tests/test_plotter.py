@@ -99,6 +99,13 @@ def test_print3d_plate_is_one_watertight_piece():
     assert p3.detect_shape(rect) == "rect"
     png = p3.preview_png(parts, cfg, dark_lines=True)
     assert png[:4] == b"\x89PNG"
+    # spread: modelled narrower, so the print comes out at the asked width; never under the min feature
+    _, i0 = p3.build(chords, p3.PrintConfig(line_width_mm=0.8, line_spread_mm=0.0))
+    _, i1 = p3.build(chords, p3.PrintConfig(line_width_mm=0.8, line_spread_mm=0.2))
+    _, i2 = p3.build(chords, p3.PrintConfig(line_width_mm=0.5, line_spread_mm=0.2))
+    assert (i1["model_width_mm"], i1["printed_width_mm"]) == (0.6, 0.8)
+    assert abs(i1["line_cover_pct"] - i0["line_cover_pct"]) < 0.1 * i0["line_cover_pct"]   # same printed ink
+    assert (i2["model_width_mm"], i2["printed_width_mm"]) == (0.42, 0.62)
 
 
 def test_invert_puts_lines_where_the_photo_is_bright(tmp_path):

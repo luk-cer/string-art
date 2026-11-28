@@ -31,7 +31,11 @@ PLA_G_PER_CM3 = 1.24
 
 @dataclass
 class PrintConfig:
-    line_width_mm: float = 0.7       # printed line width (>= nozzle 0.4; 0.6-0.8 prints cleanly)
+    line_width_mm: float = 0.7       # line width as it should come out of the printer
+    line_spread_mm: float = 0.15     # how much wider the printer lays a line than it's modelled (squish):
+                                     # measure a printed line, subtract the modelled width. Lines are
+                                     # modelled this much narrower so they print at line_width_mm.
+    min_feature_mm: float = 0.42     # narrowest line the slicer still prints (0.4 nozzle)
     line_height_mm: float = 1.2      # how far the lines stand above the plate
     base_mm: float = 0.6             # plate thickness (thin = bright when backlit)
     margin_mm: float = 4.0           # plate beyond the drawing
@@ -180,7 +184,9 @@ def build(polylines, cfg: PrintConfig = PrintConfig()):
         if f is not None and f[3] < 0.05:
             cx, cy = f[0], f[1]
     lines = MultiLineString([[(x - cx, cy - y) for x, y in pl] for pl in pls])
-    half_w = cfg.line_width_mm / 2
+    model_w = max(cfg.line_width_mm - cfg.line_spread_mm, cfg.min_feature_mm)
+    printed_w = model_w + cfg.line_spread_mm          # = line_width_mm unless it was too thin to model
+    half_w = model_w / 2
     pad = cfg.margin_mm + half_w + cfg.rim_mm
     if shape == "circle":
         R = np.hypot(p[:, 0] - cx, p[:, 1] - cy).max() + pad
@@ -244,11 +250,13 @@ def build(polylines, cfg: PrintConfig = PrintConfig()):
     combined = plate + up
     bx0, by0, bx1, by1 = body.bounds
     size = (bx1 - bx0, by1 - by0, cfg.base_mm + cfg.line_height_mm)
-    cover = region.area / inner.area if inner.area else 0.0
+    # coverage as printed: each edge moves out by spread/2 (area + boundary length * spread/2)
+    cover = min(1.0, (region.area + region.boundary.length * cfg.line_spread_mm / 2) / inner.area) if inner.area else 0.0
     info = {
         "mode": cfg.mode, "shape": shape, "size_mm": [round(v, 1) for v in size],
         "swap_at_mm": round(cfg.base_mm, 2),
         "line_cover_pct": round(100 * cover, 1),
+        "model_width_mm": round(model_w, 3), "printed_width_mm": round(printed_w, 3),
         "plate_g": round(plate.volume() / 1000 * PLA_G_PER_CM3, 1),
         "lines_g": round(up.volume() / 1000 * PLA_G_PER_CM3, 1),
         "triangles": combined.num_tri(),
@@ -346,6 +354,12 @@ def preview_png(parts, cfg, dark_lines=False, px_mm=0.1, max_side=1400, view=Non
     view "base" = the white layer with bridges/web in red."""
     from PIL import Image
     plate, raised, extra = thickness_map(parts, px_mm)
+    r = cfg.line_spread_mm / 2 / px_mm
+    if r >= 0.5:                                  # show lines at their printed (spread) width
+        from scipy.ndimage import binary_dilation
+        k = int(math.ceil(r))
+        yy, xx = np.mgrid[-k:k + 1, -k:k + 1]
+        raised = binary_dilation(raised, structure=xx * xx + yy * yy <= r * r) & plate
     light, dark = (247, 247, 244), (28, 28, 30)
     base_c, line_c, wall_c = (dark, light, (52, 52, 56)) if cfg.light_lines else (light, dark, (226, 224, 219))
     if cfg.mode == "open" or view == "front":
