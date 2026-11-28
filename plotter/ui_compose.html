@@ -92,6 +92,7 @@ main{display:grid;grid-template-rows:1fr auto;min-width:0}
     <div class="seg" id="shapeSeg" style="margin-top:6px"><button data-sh="circle">Circle</button><button data-sh="rect">Rectangle</button></div>
     <div class="slider"><label for="tone">Darkness <small>lower = lighter, sparser</small></label>
       <input type="range" id="tone" min="0.2" max="1.5" step="0.05"><input type="number" id="toneN" min="0.2" max="1.5" step="0.05"></div>
+    <label style="display:block;margin-top:6px"><input type="checkbox" id="faces"> Find faces (more detail on eyes and mouth)</label>
     <h2 style="margin-top:12px">Photo in the frame</h2>
     <div class="slider"><label for="zoom">Zoom</label><input type="range" id="zoom" min="1" max="4" step="0.05"><input type="number" id="zoomN" min="1" max="4" step="0.05"></div>
     <div class="slider"><label for="panX">Pan left ↔ right</label><input type="range" id="panX" min="-1" max="1" step="0.02"><input type="number" id="panXN" min="-1" max="1" step="0.02"></div>
@@ -143,7 +144,9 @@ function paperWH(){ const [a,b] = PAPERS[C.paper]; return C.orient === "portrait
 const roundShape = it => it.style === "stringart" || it.shape === "circle";
 const squareOnly = it => roundShape(it) || it.style === "hatch";
 function sig(it){ return JSON.stringify([+it.w.toFixed(2), +it.h.toFixed(2), it.style, roundShape(it) ? "circle" : "rect",
-  it.tone, it.zoom, it.panX, it.panY, C.pen, JSON.stringify(styleParams(it.style))]); }
+  it.tone, it.zoom, it.panX, it.panY, C.pen, JSON.stringify(itemParams(it))]); }
+// a frame's own face toggle overrides the preview page's (not every photo has a face)
+function itemParams(it){ return {...styleParams(it.style), face_detect: it.faces !== false}; }
 function state(it){
   if(it.rendering) return ["rendering…", "todo"];
   if(!it.r) return ["not rendered", "todo"];
@@ -173,7 +176,7 @@ function enforceShape(it){ if(squareOnly(it)){ const s = Math.min(it.w, it.h); i
 function persist(){
   store.set("paper", C.paper); store.set("orient", C.orient); store.set("pen", C.pen); store.set("margin", C.margin);
   store.set("items", C.items.map(it => ({image:it.image, name:it.name, x:it.x, y:it.y, w:it.w, h:it.h, shape:it.shape,
-    style:it.style, tone:it.tone, zoom:it.zoom, panX:it.panX, panY:it.panY})));
+    style:it.style, tone:it.tone, faces:it.faces !== false, zoom:it.zoom, panX:it.panX, panY:it.panY})));
 }
 let uidN = 0;
 function addItem(image, name, o = {}){
@@ -210,7 +213,7 @@ async function renderItem(it){
   try{
     const r = await fetch("/api/compose/item", {method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({image:it.image.id, style:it.style, shape: roundShape(it) ? "circle" : "rect", frame,
-        crop: cropFor(it), pen_mm: C.pen, tone: it.tone, params: styleParams(it.style)})});
+        crop: cropFor(it), pen_mm: C.pen, tone: it.tone, params: itemParams(it)})});
     const j = await r.json(); if(!r.ok) throw new Error(j.error);
     it.r = {key:j.key, polylines:j.polylines, frame, sig:s, stats:j.stats}; it.cache = null;
   }catch(e){ setStats(`<span class="err">${it.name}: ${e.message}</span>`); throw e; }
@@ -287,6 +290,7 @@ function buildItems(){
       b.disabled = it.style === "stringart" && b.dataset.sh === "rect";
     });
     for(const k of ["tone","zoom","panX","panY"]){ $(k).value = it[k]; $(k+"N").value = it[k]; }
+    $("faces").checked = it.faces !== false;
     $("renderOne").disabled = C.busy || it.rendering;
   }
   const todo = C.items.filter(it => !it.r || it.r.sig !== sig(it)).length;
@@ -309,10 +313,11 @@ for(const k of ["tone","zoom","panX","panY"]){
   $(k).oninput = e => set(e.target.value);
   $(k+"N").onchange = e => set(e.target.value);
 }
+$("faces").onchange = e => { cur().faces = e.target.checked; persist(); refresh(); };
 $("cHBtn").onclick = () => { const it = cur(); it.x = (paperWH()[0] - it.w) / 2; changedItem(it); };
 $("cVBtn").onclick = () => { const it = cur(); it.y = (paperWH()[1] - it.h) / 2; changedItem(it); };
 $("dupBtn").onclick = () => { const it = cur(); addItem(it.image, it.name, {x:it.x + 10, y:it.y + 10, w:it.w, h:it.h, shape:it.shape,
-  style:it.style, tone:it.tone, zoom:it.zoom, panX:it.panX, panY:it.panY}); };
+  style:it.style, tone:it.tone, faces:it.faces, zoom:it.zoom, panX:it.panX, panY:it.panY}); };
 $("delBtn").onclick = () => { C.items.splice(C.sel, 1); C.sel = Math.min(C.sel, C.items.length - 1); persist(); refresh(); };
 
 const drop = $("drop");

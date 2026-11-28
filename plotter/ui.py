@@ -131,7 +131,7 @@ class App:
             if params.get("max_side") in (0, "0"):
                 params["max_side"] = None
             params.setdefault("size_mm", params.get("diameter_mm") or 0)   # the common "Size on paper"
-        if style == "stringart":
+        if style in ("stringart", "hatch", "scribble"):
             self._with_mask(params, image)
         return pipeline.config_from_dict(cls, params), build, params
 

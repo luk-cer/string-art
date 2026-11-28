@@ -10,7 +10,9 @@ Sources, combined with max():
   (the brush in the preview UI).
 
 The map is cropped and resized exactly like the target, so it lines up with it.
-Solvers use it as an extra error weight: weight *= 1 + strength * map.
+String art uses it as an extra error weight: weight *= 1 + strength * map. Flow hatch and
+scribble don't optimise an error, so there it means finer detail: hatch directions and tone
+are smoothed less, scribble keeps weaker edges, traces them first and packs contours closer.
 """
 
 from pathlib import Path
@@ -89,8 +91,16 @@ def source_map(image_path, face=True, mask_path=None):
 def importance_map(image_path, box, size_px, face=True, mask_path=None):
     """Importance on the solver grid: crop `box` (x, y, w, h source pixels) and resize to
     size_px x size_px, exactly like the target."""
+    return importance_grid(image_path, box, (size_px, size_px), face, mask_path)
+
+
+def importance_grid(image_path, box, shape, face=True, mask_path=None):
+    """Importance on any H x W grid: crop `box` (x, y, w, h source pixels, None = whole
+    photo) and resize to shape = (H, W)."""
     m, info = source_map(image_path, face, mask_path)
-    x, y, w, h = box
-    im = Image.fromarray((m * 255).astype(np.uint8)).crop((x, y, x + w, y + h))
-    im = im.resize((size_px, size_px), Image.Resampling.BILINEAR)
+    im = Image.fromarray((m * 255).astype(np.uint8))
+    if box is not None:
+        x, y, w, h = box
+        im = im.crop((x, y, x + w, y + h))
+    im = im.resize((int(shape[1]), int(shape[0])), Image.Resampling.BILINEAR)
     return np.asarray(im, np.float32) / 255.0, info

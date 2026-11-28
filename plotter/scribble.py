@@ -142,7 +142,12 @@ class ScribbleConfig:
     # tone < 1 also widens the spacing (gap / tone), so a lighter picture gets fewer contour lines.
     contour_spacing_mm: float = 0.0
     contour_min_gap: float = 0.0
-    crop: tuple | None = None          # (x, y, w, h) in source pixels
+    # importance (detected faces + painted mask, see plotter/importance.py): more contour detail
+    # there - weaker edges kept (threshold / (1+k)), traced first, wipe / (1+k). 0 = off.
+    importance: float = 0.0
+    face_detect: bool = True
+    importance_mask: str | None = None
+    crop: tuple | None = None         # (x, y, w, h) in source pixels
     shape: str = "rect"                 # rect | circle (centred square, lines clipped to the inscribed circle)
     frame: bool = False                 # circle: also draw the circle outline
     # paper / output
@@ -437,6 +442,16 @@ def ink_coverage(lines, shape, pen_px, supersample=4):
     a = np.asarray(im, dtype=float).reshape(H, k, W, k).mean(axis=(1, 3)) / 255.0
     return a
 
+def source_box(image_path, cfg):
+    """(x, y, w, h) in source pixels of the area load_gray uses (crop, then circle square)."""
+    img = ImageOps.exif_transpose(Image.open(image_path))
+    x, y, w, h = cfg.crop or (0, 0, img.width, img.height)
+    if getattr(cfg, "shape", "rect") == "circle" and w != h:
+        sq = min(w, h)
+        x, y, w, h = x + (w - sq) // 2, y + (h - sq) // 2, sq, sq
+    return x, y, w, h
+
+
 def load_gray(image_path, cfg):
     img = ImageOps.exif_transpose(Image.open(image_path))
     if cfg.crop:
@@ -481,7 +496,13 @@ class Scribble:
         self.edges_x = sobel(self.pix, 0)
         self.edges_y = sobel(self.pix, 1)
         mag = _rescale(np.sqrt(self.edges_x ** 2 + self.edges_y ** 2))
-        mag[mag < c.gradient_threshold] = 0
+        imp = getattr(self, "imp", None)
+        if imp is not None:
+            self.imp_gain = 1.0 + c.importance * imp          # 1 = ordinary, up to 1 + k
+            mag[mag < c.gradient_threshold / np.sqrt(self.imp_gain)] = 0   # full gain picks up skin noise
+        else:
+            self.imp_gain = None
+            mag[mag < c.gradient_threshold] = 0
         self.edges_x[mag == 0] = 0
         self.edges_y[mag == 0] = 0
         d = c.trace_kernel_size
@@ -501,6 +522,8 @@ class Scribble:
         t_v = np.percentile(var, lp) if var.size else 0.0
         self.threshold = t_i + t_v - t_i * t_v
 
+        if self.imp_gain is not None:
+            mag = mag * self.imp_gain ** 2                     # important edges get traced first
         s = mag.sum()
         if s > 0:
             mag /= s
@@ -552,6 +575,9 @@ class Scribble:
             ratio = np.where(h < t, 1.0, 1 - factor)
             sr = (1 + ratio * (max_radius - 1)).astype(np.int64)     # int() truncation, values >= 0
             r[inb] = np.maximum(0, np.minimum(sr, max_radius))
+            gain = getattr(self, "imp_gain", None)
+            if gain is not None:             # important areas: narrower wipe, contours pack closer
+                r[inb] = np.round(r[inb] / gain[xs[inb], ys[inb]]).astype(np.int64)
             rmin = getattr(self, "contour_rmin", 0)
             if rmin > 0:                     # keep contour lines at least this far apart (pen widths)
                 r[inb] = np.maximum(r[inb], min(int(np.ceil(rmin)), max_radius))
@@ -1051,5 +1077,13 @@ def scribble(image_path, cfg: ScribbleConfig, progress=None):
     """Returns (lines in (row, col) pixel coords, image shape)."""
     pix = load_gray(image_path, cfg)
     s = Scribble(pix, cfg)
+    if cfg.importance > 0 and cfg.cleanup_mode == "adaptive":
+        from .importance import importance_grid
+        s.imp, info = importance_grid(image_path, source_box(image_path, cfg), pix.shape,
+                                      cfg.face_detect, cfg.importance_mask)
+        if progress:
+            progress(f"  importance: {info['faces']} face(s), painted mask {'yes' if info['painted'] else 'no'}")
+        if not s.imp.any():
+            s.imp = None
     s.run(progress)
     return s.lines, pix.shape, s

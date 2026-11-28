@@ -82,6 +82,34 @@ def test_scribble_size_and_dpi_set_working_resolution(tmp_path):
     assert small.shape == (125, 250)                     # half the size -> half the pixels, same mm/px
 
 
+def test_importance_adds_detail_only_where_painted_hatch_and_scribble(tmp_path):
+    from PIL import Image
+    from plotter import scribble as scr, hatch as hz
+    rng = np.random.default_rng(3)
+    yy, xx = np.mgrid[:240, :240]
+    g = 0.5 + 0.25 * np.sin(xx / 6.0) * np.cos(yy / 9.0) + 0.05 * rng.standard_normal((240, 240))
+    Image.fromarray((np.clip(g, 0, 1) * 255).astype(np.uint8)).save(tmp_path / "p.png")
+    mask = Image.new("L", (240, 240), 0)
+    mask.paste(255, (0, 0, 120, 240))                     # left half important
+    mask.save(tmp_path / "m.png")
+    imp = dict(face_detect=False, importance_mask=str(tmp_path / "m.png"))
+
+    def halves(lines):                                    # contour points left / right of centre
+        p = np.array([q for l in lines for q in l], float).reshape(-1, 2)
+        return (p[:, 1] < 118).sum(), (p[:, 1] > 122).sum()
+    base = dict(size_mm=60.0, dpi=100.0, pen_mm=0.3, hatch=False, contour_spacing_mm=1.5, contour_min_gap=1.0)
+    l0, r0 = halves(scr.scribble(str(tmp_path / "p.png"), scr.ScribbleConfig(**base))[0])
+    l1, r1 = halves(scr.scribble(str(tmp_path / "p.png"), scr.ScribbleConfig(**base, importance=2.0, **imp))[0])
+    assert l1 > 1.08 * l0 and abs(r1 - r0) < 0.05 * r0   # more contour detail only on the painted side
+
+    cfg = dict(pen_mm=0.3, diameter_mm=60, shape="rect", layer_angles=(0.0,), layer_thresholds=(0.1,), seed=2)
+    a, _, _ = hz.flow_hatch(str(tmp_path / "p.png"), hz.HatchConfig(**cfg), progress=None)
+    b, _, _ = hz.flow_hatch(str(tmp_path / "p.png"), hz.HatchConfig(**cfg, importance=3.0, **imp), progress=None)
+    la = sum(np.hypot(*np.diff(np.asarray(p), axis=0).T).sum() for p in a[0])
+    lb = sum(np.hypot(*np.diff(np.asarray(p), axis=0).T).sum() for p in b[0])
+    assert a[0] != b[0] and abs(lb - la) < 0.15 * la       # different strokes, about the same ink
+
+
 def test_scribble_contour_spacing_in_mm_and_tone():
     from plotter import scribble as scr
     pix = np.ones((200, 200)) * 0.5

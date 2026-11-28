@@ -192,7 +192,9 @@ const HELP = {
   hatch_walls: "Hatch lines stop at contour lines: major = silhouettes and big shape edges, all = every contour line, none = hatch across.",
   hatch_major_px: "Scale at which an edge counts as major. 4 = big shapes, 6 = mostly the silhouette.",
   importance: "How much more the solver cares about likeness in important areas (red in the photo above): weight ×(1 + this). Faces are found automatically (eyes and mouth count most); tick 'Paint important areas' under the photo to add your own. 2 sharpens the face at almost no cost elsewhere; higher takes lines from the background. 0 = off.",
-  face_detect: "Find faces, eyes and mouth in the photo (OpenCV YuNet) and mark them important. Works on tilted faces and groups. Untick to use only your painted areas.",
+  "hatch:importance": "More detail in important areas (red in the photo above): line directions and tone are smoothed (1 + this) times less there, so strokes follow eyes, nose and mouth instead of sweeping past. Darkness stays the same. Faces are found automatically; tick 'Paint important areas' under the photo to add your own. 0 = off.",
+  "scribble:importance": "More contour detail in important areas (red in the photo above): edges up to (1 + this) times weaker are kept, they're traced first, and contour lines pack (1 + this) times closer (never under the min gap). The tone layer adds correspondingly less there, so darkness stays about the same. Faces are found automatically; tick 'Paint important areas' under the photo to add your own. Not used with the quadrant spacing rule. 0 = off.",
+  face_detect: "Find faces, eyes and mouth in the photo (OpenCV YuNet) and mark them important. Works on tilted faces and groups. Untick when the photo has no face (or the detector picks up the wrong thing) to use only your painted areas.",
   refine: "After the line-by-line solve, go back over the whole drawing: remove lines that no longer help (early lines often become redundant) and add better ones, repeated this many rounds. 10 rounds add a few seconds and noticeably sharpen features; more rounds give a little more. Lines are then re-chained into strokes, so a plot has a few dozen pen lifts instead of ~25. Not used with 'one continuous path'.",
   min_lines: "Keep drawing the best available line until this many, even after the tone target is reached. Use when it stops too early; the result gets darker than the photo.",
   overshoot: "How strongly ink on areas lighter than the photo is penalised. Higher = cleaner highlights but fewer lines; lower = denser, darker.",
@@ -403,6 +405,8 @@ const STYLE_PARAMS = {
     {k:"outline_smooth_mm", label:"Outline smoothing", unit:"mm", min:0.5, max:6, step:0.25, v:2.5},
     {k:"outline_min_len_mm", label:"Outline min length", unit:"mm", min:0, max:60, step:1, v:15},
     {k:"shape", label:"Shape", type:"select", opts:["circle","rect"], v:"circle"},
+    {k:"importance", label:"Detail in important areas (faces + painted)", min:0, max:6, step:0.5, v:1.5, redraw:true},
+    {k:"face_detect", label:"Find faces automatically", type:"check", v:true, redraw:true, when:P => P.importance > 0},
     {k:"seed", label:"Random seed", min:1, max:99, step:1, v:1},
   ],
   scribble: [
@@ -424,6 +428,10 @@ const STYLE_PARAMS = {
     {k:"contour_spacing_mm", label:"Line spacing on paper (max gap, 0 = px)", unit:"mm", min:0, max:8, step:0.1, v:1.0},
     {k:"cleanup_radius", label:"Line spacing (max gap)", unit:"px", min:1, max:20, step:1, v:4, when:P => !P.contour_spacing_mm},
     {k:"contour_min_gap", label:"Min gap between contour lines", unit:"pens", min:0, max:4, step:0.25, v:1},
+    {k:"importance", label:"Detail in important areas (faces + painted)", min:0, max:6, step:0.5, v:1, redraw:true,
+     when:P => P.cleanup_mode !== "quadrant"},
+    {k:"face_detect", label:"Find faces automatically", type:"check", v:true, redraw:true,
+     when:P => P.importance > 0 && P.cleanup_mode !== "quadrant"},
     {k:"max_lines", label:"Max contour lines", min:100, max:30000, step:100, v:10000},
     {k:"main_max_steps", label:"Max line length", unit:"px", min:100, max:10000, step:100, v:1000},
     {k:"main_momentum", label:"Momentum (calmer lines)", min:0, max:0.95, step:0.05, v:0},
@@ -654,7 +662,7 @@ function buildControls(){
 }
 // scribble presets come from the server (plotter/scribble.py PRESETS) so they never drift
 let _presets = null;
-const KEEP_ON_PRESET = ["preset","max_side","dpi","contour_spacing_mm","contour_min_gap","legacy_ink_cap","rotate","shape","frame","workers","seed","simplify_px","join_px",
+const KEEP_ON_PRESET = ["preset","max_side","dpi","contour_spacing_mm","contour_min_gap","importance","face_detect","legacy_ink_cap","rotate","shape","frame","workers","seed","simplify_px","join_px",
   "hatch_mode","main_lines","freehand_density","freehand_loop_min","freehand_loop_max","freehand_advance",
   "freehand_momentum","freehand_noise","freehand_tone_jitter","freehand_wobble","freehand_flow_pull","freehand_stroke_px","freehand_walls","freehand_major_px","hatch_view_px","hatch_ink_passes","hatch_spacing_min_px","hatch_spacing_max_px","hatch_fill_px","hatch_max_turn_deg","main_momentum","smooth_main"];
 async function applyPreset(name){
@@ -768,11 +776,12 @@ function cropForStyle(){
   if(freeCrop()) S.crop = [0, 0, S.image.width, S.image.height];
   else S.crop = S.image.crop.slice();
 }
-// ---------------------------------------------------------------- importance (string art)
+// ---------------------------------------------------------------- importance (all styles)
 // Red overlay on the photo: detected faces (from the server) + what you paint.
 // The painted mask is kept at <= 600 px and sent to the server as a grayscale PNG.
 let faceTint = null, faceCount = null, maskCv = null, maskDirty = false, painting = false;
-const impOn = () => S.style === "stringart" && (S.params.stringart.importance || 0) > 0;
+const impP = () => S.params[S.style] || {};      // every style has importance + face_detect
+const impOn = () => (impP().importance || 0) > 0 && !(S.style === "scribble" && impP().cleanup_mode === "quadrant");
 function resetImportance(){
   faceTint = null; faceCount = null; maskDirty = false;
   const s = Math.min(1, 600 / Math.max(S.image.width, S.image.height));
@@ -796,15 +805,15 @@ async function loadFaces(){
 }
 function drawImportance(w, h){
   const show = impOn();
-  $("impBar").style.display = S.style === "stringart" ? "block" : "none";
+  $("impBar").style.display = "block";
   const pm = $("paintMode").checked;
   $("eraseWrap").style.display = $("brushWrap").style.display = pm ? "inline" : "none";
   cc.style.cursor = pm && show ? "crosshair" : "move";
-  $("faceInfo").textContent = !show ? "importance is 0 (off)"
-    : !S.params.stringart.face_detect ? "face finding off"
+  $("faceInfo").textContent = !show ? ((impP().importance || 0) > 0 ? "not used with the quadrant spacing rule" : "importance is 0 (off)")
+    : !impP().face_detect ? "face finding off"
     : faceCount == null ? "finding faces…" : faceCount ? `${faceCount} face${faceCount > 1 ? "s" : ""} found` : "no face found";
   if(!show) return;
-  if(faceTint && S.params.stringart.face_detect) cx.drawImage(faceTint, 0, 0, w, h);
+  if(faceTint && impP().face_detect) cx.drawImage(faceTint, 0, 0, w, h);
   if(maskCv){ cx.globalAlpha = 0.5; cx.drawImage(maskCv, 0, 0, w, h); cx.globalAlpha = 1; }
 }
 function paintAt(px, py){

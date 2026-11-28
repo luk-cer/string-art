@@ -18,7 +18,7 @@ new lines beside finished ones, stop a line when it gets too close to another.
 """
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
 
 import numpy as np
@@ -72,6 +72,11 @@ class HatchConfig:
     outline_levels: tuple = ()        # darkness iso-levels to draw as contour lines, e.g. (0.35, 0.65)
     outline_smooth_mm: float = 2.5
     outline_min_len_mm: float = 15.0        # stop at sharp turns / field singularities
+    # importance (detected faces + painted mask): finer detail there - the direction field and
+    # the tone map are smoothed (1 + k) times less. 0 = off.
+    importance: float = 0.0
+    face_detect: bool = True
+    importance_mask: str | None = None
     seed: int = 1
 
     def s_min(self):
@@ -446,12 +451,29 @@ def flow_hatch(image_path, cfg, progress=print):
     size = int(round(2 * R / px))
     if cfg.shape == "rect":
         darkness, _, mask, box = _prepare_rect(image_path, cfg, size)
-    else:
-        darkness, _, mask, box = sa.prepare_target(image_path, cfg, size)
+    else:   # importance is applied here, not as string art's error weight
+        darkness, _, mask, box = sa.prepare_target(image_path, replace(cfg, importance=0.0), size)
     gray = 1.0 - darkness
     base = direction_field(gray, cfg, px)
     rng = np.random.default_rng(cfg.seed)
     shared = _Shared(darkness, mask, cfg, px)
+    if cfg.importance > 0:
+        from .importance import importance_map
+        imp, info = importance_map(image_path, box, size, cfg.face_detect, cfg.importance_mask)
+        if progress:
+            progress(f"  importance: {info['faces']} face(s), painted mask {'yes' if info['painted'] else 'no'}")
+        if imp.any():
+            k = 1.0 + cfg.importance
+            fine = replace(cfg, flow_smooth_mm=cfg.flow_smooth_mm / k,
+                           flow_fill_mm=cfg.flow_fill_mm / k, tone_smooth_mm=cfg.tone_smooth_mm / k)
+            # blend orientations as doubled angles (axial), weight = importance
+            a = np.clip(imp, 0, 1)
+            fd = direction_field(gray, fine, px)
+            vx = (1 - a) * np.cos(2 * base) + a * np.cos(2 * fd)
+            vy = (1 - a) * np.sin(2 * base) + a * np.sin(2 * fd)
+            base = 0.5 * np.arctan2(vy, vx)
+            tone = (1 - a) * shared.tone + a * _Shared(darkness, mask, fine, px).tone
+            shared.tone, shared.tone_l = tone, tone.ravel().tolist()
 
     layers = []
     for k, (off, thr) in enumerate(zip(cfg.layer_angles, cfg.layer_thresholds)):
