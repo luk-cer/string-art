@@ -32,7 +32,7 @@ HERE = Path(__file__).parent
 MAX_UPLOAD = 40 * 1024 * 1024
 MAX_SIDE = 2000
 ID_RE = re.compile(r"^[0-9a-f]{32}$")
-FILE_RE = re.compile(r"^plot\.(gcode|svg|json)$")
+FILE_RE = re.compile(r"^(plot\.(gcode|svg|json)|print(_plate|_lines)?\.(stl|3mf))$")
 
 
 def _png_data_url(darkness):
@@ -328,6 +328,12 @@ class App:
         params = dict(meta.get("params") or {})        # already converted by _config when first rendered
         mask = self.mask_path(meta["image"])
         params["importance_mask"] = str(mask) if mask.exists() else None
+        if req.get("pen_mm"):                     # e.g. 3D print: design for the printed line width
+            old = float(params.get("pen_mm") or cls().pen_mm)
+            params["pen_mm"] = float(req["pen_mm"])
+            if style == "stringart":              # keep the viewing cell the same multiple of the pen,
+                px = float(params.get("pixel_mm") or cls().pixel_mm)   # else a wide line fills its cells
+                params["pixel_mm"] = px * params["pen_mm"] / old       # solid and the solve stops early
         cfg = pipeline.config_from_dict(cls, params)
         # big page, no padding: the layout page places the result, the page itself doesn't matter
         page = dict(paper="A3", portrait=True, padding_mm=0)
@@ -349,6 +355,34 @@ class App:
         out = self.layout_load({"job": new, "name": req.get("name")})
         out["job"] = new
         return out
+
+    # -- 3D print: the drawing raised on a thin plate (see print3d.py) -------------------------
+    def print3d_build(self, req):
+        from . import print3d as p3
+        from .layout import parse_gcode, normalise
+        job = req["job"]
+        pls, _ = parse_gcode(self.job_file(job, "plot.gcode").read_text())
+        local, _, _ = normalise(pls)
+        s = float(req.get("scale") or 1.0)        # plain scaling (drawings that can't be re-rendered)
+        if s != 1.0:
+            local = [[(x * s, y * s) for x, y in pl] for pl in local]
+        cfg = pipeline.config_from_dict(p3.PrintConfig, req.get("cfg") or {})
+        t0 = time.time()
+        with self.lock:
+            parts, info = p3.build(local, cfg)
+            jdir = self.work / "jobs" / job
+            (jdir / "print.stl").write_bytes(p3.stl_bytes(parts["combined"]))
+            (jdir / "print_plate.stl").write_bytes(p3.stl_bytes(parts["plate"]))
+            (jdir / "print_lines.stl").write_bytes(p3.stl_bytes(parts["raised"]))
+            (jdir / "print.3mf").write_bytes(p3.threemf_bytes(
+                [("plate", parts["plate"], "#F4F4F0"), ("lines", parts["raised"], "#1E1E1E")]))
+            prev = {k: "data:image/png;base64," + base64.b64encode(p3.preview_png(parts, cfg, dark_lines=d)).decode()
+                    for k, d in (("white", False), ("dark", True))}
+        info = {k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in info.items()}
+        info["seconds"] = round(time.time() - t0, 1)
+        return {"info": info, "previews": prev,
+                "files": {n: f"/api/file/{job}/{n}" for n in
+                          ("print.stl", "print.3mf", "print_plate.stl", "print_lines.stl")}}
 
     def layout_export(self, req):
         from .gcode import write_gcode, write_svg, limit_ink
@@ -423,6 +457,8 @@ def make_handler(app):
                     self._send(200, (HERE / "ui_index.html").read_bytes(), "text/html; charset=utf-8")
                 elif self.path.split("?")[0] in ("/layout", "/layout.html"):
                     self._send(200, (HERE / "ui_layout.html").read_bytes(), "text/html; charset=utf-8")
+                elif self.path.split("?")[0] in ("/print3d", "/print3d.html"):
+                    self._send(200, (HERE / "ui_print3d.html").read_bytes(), "text/html; charset=utf-8")
                 elif self.path.split("?")[0] in ("/compose", "/compose.html"):
                     self._send(200, (HERE / "ui_compose.html").read_bytes(), "text/html; charset=utf-8")
                 elif parts == ["api", "jobs"]:
@@ -438,8 +474,8 @@ def make_handler(app):
                     self._send(200, app.image_path(parts[2]).read_bytes(), "image/png")
                 elif parts[:2] == ["api", "file"] and len(parts) == 4:
                     p = app.job_file(parts[2], parts[3])
-                    ctype = {"gcode": "text/plain", "svg": "image/svg+xml",
-                             "json": "application/json"}[p.suffix[1:]]
+                    ctype = {"gcode": "text/plain", "svg": "image/svg+xml", "json": "application/json",
+                             "stl": "model/stl", "3mf": "model/3mf"}[p.suffix[1:]]
                     self._send(200, p.read_bytes(), ctype,
                                {"Content-Disposition": f'attachment; filename="{p.name}"'})
                 else:
@@ -459,6 +495,8 @@ def make_handler(app):
                     self._send(200, app.render(json.loads(body)))
                 elif self.path == "/api/layout/load":
                     self._send(200, app.layout_load(json.loads(body)))
+                elif self.path == "/api/print3d/build":
+                    self._send(200, app.print3d_build(json.loads(body)))
                 elif self.path == "/api/layout/rerender":
                     self._send(200, app.layout_rerender(json.loads(body)))
                 elif self.path == "/api/layout/export":

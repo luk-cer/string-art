@@ -70,6 +70,37 @@ def test_compose_item_lands_in_its_frame_and_tone_thins(tmp_path):
     assert out["stats"]["draw_mm"] > 0
 
 
+def test_print3d_plate_is_one_watertight_piece():
+    import io, math, zipfile
+    import pytest
+    pytest.importorskip("shapely")
+    pytest.importorskip("manifold3d")
+    from plotter import print3d as p3
+    # sparse string art: a few chords between points on a circle (y down, paper mm)
+    ang = np.linspace(0, 2 * math.pi, 41)[:-1]
+    pts = [(100 + 50 * math.cos(a), 80 + 50 * math.sin(a)) for a in ang]
+    chords = [[pts[i], pts[(i * 7 + 13) % 40]] for i in range(0, 40, 3)]
+    assert p3.detect_shape(chords) == "circle"
+    cfg = p3.PrintConfig(line_width_mm=0.7, base_mm=0.6, line_height_mm=1.2, margin_mm=2, rim_mm=2, hole_mm=4)
+    parts, info = p3.build(chords, cfg)
+    assert info["shape"] == "circle" and info["swap_at_mm"] == 0.6
+    for k in ("plate", "raised", "combined"):
+        assert parts[k].status().name == "NoError"
+    assert parts["combined"].genus() == 1                      # one through hole: the hanging hole
+    w, h, z = info["size_mm"]
+    assert abs(w - 2 * (50 + 2 + 0.35 + 2)) < 0.5 and abs(z - 1.8) < 1e-6
+    stl = p3.stl_bytes(parts["combined"])
+    assert len(stl) == 84 + 50 * parts["combined"].num_tri()
+    with zipfile.ZipFile(io.BytesIO(p3.threemf_bytes([("plate", parts["plate"], "#FFFFFF"),
+                                                       ("lines", parts["raised"], "#000000")]))) as z:
+        model = z.read("3D/3dmodel.model").decode()
+    assert model.count("<object ") == 2
+    rect = [[(0, 0), (120, 0)], [(120, 0), (120, 60)], [(0, 60), (120, 60)], [(0, 0), (0, 60)], [(0, 0), (120, 60)]]
+    assert p3.detect_shape(rect) == "rect"
+    png = p3.preview_png(parts, cfg, dark_lines=True)
+    assert png[:4] == b"\x89PNG"
+
+
 def test_layout_rerender_at_placed_size(tmp_path):
     from PIL import Image
     from plotter.ui import App

@@ -349,3 +349,14 @@ G-code findings:
 - `generate_final_gcode` maps Y negative and prints 14 decimals (unused).
 - app7 uses `merge_lines` before importing it (notebook-only); app5 imports `finalize_and_generate_gcode`,
   which no longer exists.
+
+## 3D printing (Creality K1C, 220 x 220 bed)
+
+- [x] Line art on a plate (`plotter/print3d.py`, page /print3d): lines widened to the printed width,
+      raised `line_height_mm` on a `base_mm` plate (circle fitted to the hull / rounded rect), rim,
+      hanging lug. STL + 3MF (plate and lines as two parts); filament swap at Z = base. Backlit
+      previews. Needs `--extra print3d` (shapely, manifold3d). Re-render for printing sets pen = line
+      width; string art also scales pixel_mm with the pen (0.7 pen at 0.6 mm cells stopped at 6 m).
+- [ ] Lithophane: thickness from the photo (0.6-3 mm), heightmap -> STL, same frame/lug.
+- [ ] Free-standing line art: a white bridge layer or two (connect all pieces: components +
+      shortest bridges + rim), then dark lines on top after a filament swap.

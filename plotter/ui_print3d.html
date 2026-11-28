@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D print: line art on a plate</title>
+<style>
+:root{
+  --bg:#f4f3f0; --panel:#ffffff; --ink:#1d1d1f; --muted:#6b6b70; --line:#e2e0db;
+  --accent:#2f5bd3; --accent-ink:#fff; --desk:#d9d6cf; --danger:#b3261e; --warn:#9a6700;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#17181a; --panel:#202124; --ink:#ececec; --muted:#9a9aa0; --line:#34353a;
+         --accent:#7d9cff; --accent-ink:#0f1115; --desk:#0f1012; --danger:#ff8a80; --warn:#e3b341; }
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  display:grid;grid-template-columns:350px 1fr;grid-template-rows:100%}
+aside{background:var(--panel);border-right:1px solid var(--line);overflow-y:auto;padding:14px 16px 40px}
+h1{font-size:15px;margin:0 0 4px;letter-spacing:.2px}
+a{color:var(--accent);text-decoration:none}
+h1 + a, h1 + a + a{font-size:12px}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:18px 0 8px;font-weight:600}
+.row{display:grid;grid-template-columns:1fr 110px;gap:8px;align-items:center;margin:6px 0}
+.row label{font-size:13px}
+.row input,.row select{width:100%;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:inherit}
+.btn{border:0;border-radius:8px;padding:8px 12px;font:inherit;font-weight:600;cursor:pointer;background:var(--accent);color:var(--accent-ink)}
+.btn:disabled{opacity:.5;cursor:default}
+.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);font-weight:500}
+.btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.list{display:flex;flex-direction:column;gap:6px;max-height:260px;overflow-y:auto}
+.job{display:grid;grid-template-columns:54px 1fr;gap:8px;align-items:center;border:1px solid var(--line);border-radius:8px;padding:5px;cursor:pointer}
+.job:hover{border-color:var(--accent)}
+.job.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.job img{width:54px;height:40px;object-fit:contain;background:#fff;border-radius:4px}
+.job small{color:var(--muted);display:block}
+.hint{font-size:12px;color:var(--muted);margin-top:4px}
+.warn{font-size:12px;color:var(--warn);margin-top:6px}
+.err{color:var(--danger);white-space:pre-wrap}
+main{display:grid;grid-template-rows:1fr auto;min-width:0}
+#stage{overflow:auto;background:var(--desk);display:flex;gap:16px;align-items:flex-start;justify-content:center;padding:16px;flex-wrap:wrap}
+figure{margin:0;display:flex;flex-direction:column;gap:6px;align-items:center;flex:1 1 380px;max-width:720px}
+figure img{width:100%;height:auto;border-radius:6px}
+figcaption{font-size:12px;color:var(--muted);text-align:center}
+.empty{color:var(--muted);align-self:center;text-align:center;padding:40px}
+.stats{display:flex;flex-wrap:wrap;gap:6px 18px;padding:8px 14px;border-top:1px solid var(--line);background:var(--panel);font-size:13px;align-items:center;min-height:46px}
+.stats b{font-variant-numeric:tabular-nums}
+.stats a{border:1px solid var(--line);padding:4px 10px;border-radius:6px}
+</style>
+</head>
+<body>
+<aside>
+  <h1>3D print: line art on a plate</h1>
+  <a href="/">← back to preview</a> · <a href="/layout">sheet layout</a>
+  <div class="hint">The drawing stands up on a thin plate. Hung in a window or over a light, the plate glows and the lines show dark;
+    in normal light it's a relief. It's always one piece, whatever the style.</div>
+
+  <h2>1. Drawing</h2>
+  <div class="list" id="jobs"></div>
+  <div id="selInfo" class="hint"></div>
+
+  <h2>2. Size and line width</h2>
+  <div class="row"><label>Printed size (longer side)</label><input type="number" id="size" min="20" max="215" step="1"></div>
+  <div class="row"><label>Line width</label><input type="number" id="width" min="0.4" max="2" step="0.05"></div>
+  <div class="hint">Line width: what the printer lays down (0.4 nozzle: 0.6–0.8 mm prints cleanly). The drawing's line spacing must be
+    designed for it, so render it again with pen = line width at the printed size.</div>
+  <div id="fitWarn" class="warn"></div>
+  <div class="btns"><button class="btn ghost" id="rerenderBtn" disabled>Render again for printing</button></div>
+
+  <h2>3. Plate</h2>
+  <div class="row"><label>Lines stand up</label><input type="number" id="line_height_mm" min="0.2" max="5" step="0.2"></div>
+  <div class="row"><label>Plate thickness</label><input type="number" id="base_mm" min="0.2" max="3" step="0.2"></div>
+  <div class="row"><label>Margin round the drawing</label><input type="number" id="margin_mm" min="0" max="30" step="0.5"></div>
+  <div class="row"><label>Raised rim (0 = none)</label><input type="number" id="rim_mm" min="0" max="15" step="0.5"></div>
+  <div class="row"><label>Hanging hole (0 = none)</label><input type="number" id="hole_mm" min="0" max="12" step="0.5"></div>
+  <div class="row"><label>Shape</label><select id="shape"><option>auto</option><option>circle</option><option>rect</option></select></div>
+  <div class="hint">Use multiples of your layer height (0.2 mm): plate 0.6 = 3 layers. Thin plate = brighter glow;
+    taller lines = darker lines when backlit.</div>
+  <div class="btns"><button class="btn" id="buildBtn" disabled>Make 3D files</button></div>
+
+  <h2>Printing (Creality K1C)</h2>
+  <div class="hint">Open <b>print.3mf</b> (or print.stl) in Creality Print / OrcaSlicer and print it flat, in white or natural PLA.
+    For black lines on white: on the layer slider, add a <b>pause / filament change</b> at the first layer above the plate
+    (shown below as "swap at"), swap to black, resume. With a multi-colour unit, load the 3MF as one object with two parts and give each a filament.</div>
+</aside>
+<main>
+  <div id="stage"><div class="empty" id="empty">Pick a drawing, then press "Make 3D files".</div></div>
+  <div class="stats" id="stats"></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const store = {
+  get(k, d){ try{ const v = localStorage.getItem("plotter3d."+k); return v ? JSON.parse(v) : d; }catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem("plotter3d."+k, JSON.stringify(v)); }catch(e){} },
+};
+const CFG_KEYS = {line_height_mm:1.2, base_mm:0.6, margin_mm:4, rim_mm:2.5, hole_mm:4, shape:"auto"};
+const P = {cfg: {...CFG_KEYS, ...store.get("cfg", {})}, width: store.get("width", 0.7), size: null,
+           job: null, src: null, busy: false};
+function setStats(h){ $("stats").innerHTML = h; }
+
+for(const k of Object.keys(CFG_KEYS)){
+  $(k).value = P.cfg[k];
+  $(k).onchange = e => { P.cfg[k] = k === "shape" ? e.target.value : +e.target.value; store.set("cfg", P.cfg); };
+}
+$("width").value = P.width;
+$("width").onchange = e => { P.width = +e.target.value || 0.7; store.set("width", P.width); check(); };
+$("size").onchange = e => { P.size = +e.target.value; check(); };
+
+async function buildJobs(){
+  try{
+    const jobs = (await (await fetch("/api/jobs")).json());
+    $("jobs").innerHTML = jobs.length ? "" : `<div class="hint">No renders yet: make one on the preview page.</div>`;
+    for(const j of jobs){
+      const d = document.createElement("div"); d.className = "job" + (j.job === P.job?.job ? " on" : "");
+      const t = new Date(j.time * 1000);
+      d.innerHTML = `<img loading="lazy" src="${j.svg}" alt=""><div>${j.label}<small>${t.toLocaleDateString()} ${t.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"})}${j.pen_mm ? " · pen " + j.pen_mm + " mm" : ""}</small></div>`;
+      d.onclick = () => select(j);
+      $("jobs").appendChild(d);
+    }
+  }catch(e){ $("jobs").innerHTML = `<div class="err">${e.message}</div>`; }
+}
+async function select(j){
+  P.job = j; P.src = null; buildJobs(); setStats("<span>loading…</span>");
+  try{
+    const r = await fetch("/api/layout/load", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({job:j.job})});
+    const s = await r.json(); if(!r.ok) throw new Error(s.error);
+    P.src = s; P.size = Math.round(Math.min(Math.max(s.w, s.h), 200)); $("size").value = P.size; setStats("");
+  }catch(e){ setStats(`<span class="err">${e.message}</span>`); }
+  check();
+}
+function check(){
+  const s = P.src, j = P.job;
+  $("buildBtn").disabled = P.busy || !s;
+  $("rerenderBtn").disabled = true; $("fitWarn").textContent = ""; $("selInfo").textContent = "";
+  if(!s) return;
+  const cur = Math.max(s.w, s.h), scale = P.size / cur, pen = +j.pen_mm || 0;
+  $("selInfo").textContent = `${s.w.toFixed(0)} × ${s.h.toFixed(0)} mm, ${(s.draw_mm/1000).toFixed(0)} m of line` + (pen ? `, rendered for a ${pen} mm pen` : "");
+  const resize = Math.abs(scale - 1) > 0.02, repen = pen && Math.abs(pen - P.width) > 0.04;
+  if(!resize && !repen) return;
+  const why = [resize && `size ${cur.toFixed(0)} → ${P.size} mm`, repen && `pen ${pen} → ${P.width} mm`].filter(Boolean).join(", ");
+  if(s.rerender){
+    $("rerenderBtn").disabled = P.busy;
+    $("fitWarn").textContent = `Not designed for this print yet (${why}). "Render again for printing" fixes it; otherwise lines ` +
+      (repen && pen < P.width ? "merge into solid areas." : "are spaced wrong for the printed width.");
+  }else{
+    $("fitWarn").textContent = `This drawing can't be rendered again (dropped file or older render): it will just be scaled (${why}), so line spacing won't match the printed width.`;
+  }
+}
+$("rerenderBtn").onclick = async () => {
+  const s = P.src, j = P.job; if(!s) return;
+  P.busy = true; check(); setStats("<span>rendering for printing…</span>");
+  try{
+    const r = await fetch("/api/layout/rerender", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({job:j.job, scale:P.size / Math.max(s.w, s.h), pen_mm:P.width, name:j.label})});
+    const n = await r.json(); if(!r.ok) throw new Error(n.error);
+    P.job = {...j, job:n.job, pen_mm:P.width}; P.src = n; setStats("");
+    $("selInfo").textContent = "";
+    await buildJobs();
+  }catch(e){ setStats(`<span class="err">Render failed: ${e.message}</span>`); }
+  P.busy = false; check();
+};
+$("buildBtn").onclick = async () => {
+  const s = P.src; if(!s) return;
+  P.busy = true; check(); setStats("<span>building the 3D model…</span>");
+  try{
+    const r = await fetch("/api/print3d/build", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({job:P.job.job, scale:P.size / Math.max(s.w, s.h), cfg:{...P.cfg, line_width_mm:P.width}})});
+    const b = await r.json(); if(!r.ok) throw new Error(b.error);
+    const i = b.info;
+    $("stage").innerHTML = `<figure><img src="${b.previews.white}" alt=""><figcaption>All white PLA, backlit</figcaption></figure>
+      <figure><img src="${b.previews.dark}" alt=""><figcaption>Black lines after a filament swap, backlit</figcaption></figure>`;
+    const warn = [];
+    if(!i.fits_bed) warn.push(`<span class="err">too big for the bed</span>`);
+    if(i.line_cover_pct > 60) warn.push(`<span class="err" title="Coverage follows how dark the photo is. Backlit, the glow comes from the gaps between lines: for a brighter piece lower the Darkness slider on the preview page and render again.">dark piece: lines cover ${i.line_cover_pct}%</span>`);
+    setStats(`<span>${i.shape} <b>${i.size_mm[0]} × ${i.size_mm[1]} × ${i.size_mm[2]} mm</b></span>
+      <span>swap at <b>Z ${i.swap_at_mm} mm</b></span>
+      <span>plate <b>${i.plate_g} g</b> · lines <b>${i.lines_g} g</b></span>
+      <span>lines cover <b>${i.line_cover_pct}%</b></span> ${warn.join(" ")}
+      <span>${i.seconds} s</span>
+      <a href="${b.files["print.3mf"]}">print.3mf</a><a href="${b.files["print.stl"]}">print.stl</a>
+      <a href="${b.files["print_plate.stl"]}">plate.stl</a><a href="${b.files["print_lines.stl"]}">lines.stl</a>`);
+  }catch(e){ setStats(`<span class="err">${e.message}</span>`); }
+  P.busy = false; check();
+};
+buildJobs();
+</script>
+</body>
+</html>

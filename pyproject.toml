@@ -13,6 +13,7 @@ dependencies = [
 [project.optional-dependencies]
 # face detection for the string-art importance map (YuNet needs OpenCV >= 4.8)
 faces = ["opencv-python>=4.8"]
+print3d = ["shapely>=2.0", "manifold3d>=3.0"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
