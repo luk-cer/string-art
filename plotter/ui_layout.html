@@ -96,6 +96,8 @@ main{display:grid;grid-template-rows:1fr auto;min-width:0}
       <button class="btn ghost small" id="dupBtn">Duplicate</button>
       <button class="btn ghost small" id="delBtn" style="color:var(--danger)">Remove</button>
     </div>
+    <div class="btns"><button class="btn small" id="rerenderBtn">Render again at this size</button></div>
+    <div class="hint" id="rerenderHint"></div>
     <div class="hint">Drag to move, drag the corner square to resize. Arrow keys nudge 1 mm (Shift: 10 mm). Alt while dragging: no snapping.
       Scaling changes line density, so the tone gets lighter or darker; the pen width stays the same.</div>
   </div>
@@ -145,7 +147,7 @@ async function loadSource(body){
 }
 function addItem(src, place){
   const [W,H] = paperWH(), m = L.margin;
-  const it = {id:src.id, job:place.job, name:src.name, w:src.w, h:src.h, polylines:src.polylines,
+  const it = {id:src.id, job:place.job, can:!!src.rerender, name:src.name, w:src.w, h:src.h, polylines:src.polylines,
               x:place.x ?? m, y:place.y ?? m, scale:place.scale ?? 1, rot:place.rot ?? 0, cache:null};
   if(place.scale == null){            // new: shrink to fit the printable area if needed, keep 1:1 otherwise
     const [w,h] = dims(it), s = Math.min(1, (W - 2*m) / w, (H - 2*m) / h);
@@ -198,7 +200,7 @@ function buildItems(){
     const d = document.createElement("div"); d.className = "item" + (i === L.sel ? " on" : "");
     const [w,h] = dims(it);
     const dens = it.scale < 0.9
-      ? `<span class="bad" title="Shrunk to ${Math.round(it.scale*100)}%: its lines are ${(1/it.scale).toFixed(1)}× closer, so it plots darker and may soak the paper. Better: render it again at this size (Size on paper ${Math.round(Math.max(w,h))} mm) and place it at 100%.">${(1/it.scale).toFixed(1)}× denser</span>` : "";
+      ? `<span class="bad" title="Shrunk to ${Math.round(it.scale*100)}%: its lines are ${(1/it.scale).toFixed(1)}× closer, so it plots darker and may soak the paper. Better: select it and press 'Render again at this size'.">${(1/it.scale).toFixed(1)}× denser</span>` : "";
     const warn = bad(it) ? `<span class="bad">off paper</span>` : overlaps(i) ? `<span class="bad">overlaps</span>` : dens;
     d.innerHTML = `<span title="${it.name}">${i+1}. ${it.name}</span><small>${w.toFixed(0)}×${h.toFixed(0)}</small>${warn}
       <button class="btn ghost small" data-a="up" title="Plot earlier">↑</button>`;
@@ -216,6 +218,12 @@ function buildItems(){
     $("fx").value = +it.x.toFixed(1); $("fy").value = +it.y.toFixed(1);
     $("fw").value = +w.toFixed(1); $("fh").value = +h.toFixed(1);
     $("fs").value = +(it.scale * 100).toFixed(1); $("fr").value = it.rot + "°";
+    const off = Math.abs(it.scale - 1) > 0.02;
+    $("rerenderBtn").disabled = L.busy || !it.can || !off;
+    $("rerenderHint").textContent = L.busy ? "rendering…"
+      : !it.can ? "Only drawings rendered from a photo on the preview page (since photos are remembered) can be rendered again; a dropped G-code file can only be scaled."
+      : !off ? "At 100%: line spacing is as rendered."
+      : `Solves the photo again with the same settings at ${w.toFixed(0)}×${h.toFixed(0)} mm, so line spacing and darkness stay right for the pen (scaling only squeezes or stretches the lines). Then it sits here at 100%.`;
   }
   $("exportBtn").disabled = !L.items.length;
   $("empty").style.display = L.items.length ? "none" : "";
@@ -235,6 +243,20 @@ $("fitBtn").onclick = () => { const it = cur(), [W,H] = paperWH(), m = L.margin,
   setScale(it, it.scale * Math.min((W - 2*m) / w, (H - 2*m) / h)); const [w2,h2] = dims(it);
   it.x = (W - w2) / 2; it.y = (H - h2) / 2; persist(); refresh(); };
 $("dupBtn").onclick = () => { const it = cur(); L.items.push({...it, x: it.x + 10, y: it.y + 10, cache:null}); L.sel = L.items.length - 1; persist(); refresh(); };
+$("rerenderBtn").onclick = async () => {
+  const it = cur(); if(!it || !it.job) return;
+  L.busy = true; refresh();
+  try{
+    const r = await fetch("/api/layout/rerender", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({job:it.job, scale:it.scale, name:it.name})});
+    const src = await r.json(); if(!r.ok) throw new Error(src.error);
+    const [w,h] = dims(it), cx = it.x + w/2, cy = it.y + h/2;   // keep its centre and rotation
+    Object.assign(it, {id:src.id, job:src.job, can:!!src.rerender, w:src.w, h:src.h, polylines:src.polylines, scale:1, cache:null});
+    const [w2,h2] = dims(it); it.x = cx - w2/2; it.y = cy - h2/2;
+    persist(); buildJobs(); setStats("");
+  }catch(e){ setStats(`<span class="err">Render failed: ${e.message}</span>`); }
+  L.busy = false; refresh();
+};
 $("delBtn").onclick = () => { L.items.splice(L.sel, 1); L.sel = Math.min(L.sel, L.items.length - 1); persist(); refresh(); };
 
 const drop = $("drop");

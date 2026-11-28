@@ -135,29 +135,31 @@ class App:
             self._with_mask(params, image)
         return pipeline.config_from_dict(cls, params), build, params
 
+    def _save_job(self, res, style, params, profile_d, image, comment="via preview UI", extra=None):
+        """Write G-code/SVG/JSON for a render into a new job folder. plot.json keeps the
+        settings and photo id so the layout page can render it again at another size."""
+        profile = pipeline.config_from_dict(PlotterProfile, profile_d or {})
+        job = uuid.uuid4().hex
+        jdir = self.work / "jobs" / job
+        jdir.mkdir(parents=True)
+        stats = pipeline.export(res, str(jdir / "plot"), profile, comment=f"{style} {comment}")
+        info = {k: v for k, v in res.info.items() if k != "nail_strokes"}
+        meta = {"style": style, "params": params, "profile": profile_d,
+                "stats": stats, "info": info, "image": image, **(extra or {})}
+        if "nail_strokes" in res.info:
+            meta["nail_strokes"] = res.info["nail_strokes"]
+        (jdir / "plot.json").write_text(json.dumps(meta, indent=1, default=str))
+        return job, stats, info
+
     def render(self, req):
         style = req.get("style")
         cfg, build, params = self._config(style, req.get("params"), req.get("crop"), req["image"])
-        profile = pipeline.config_from_dict(PlotterProfile, req.get("profile") or {})
-
         img = self.image_path(req["image"])
         t0 = time.time()
         with self.lock:
             res = build(str(img), cfg)
         elapsed = time.time() - t0
-
-        job = uuid.uuid4().hex
-        jdir = self.work / "jobs" / job
-        jdir.mkdir(parents=True)
-        stats = pipeline.export(res, str(jdir / "plot"), profile,
-                                comment=f"{style} via preview UI")
-        info = {k: v for k, v in res.info.items() if k != "nail_strokes"}
-        meta = {"style": style, "params": params, "profile": req.get("profile"),
-                "stats": stats, "info": info, "image": req["image"]}
-        if "nail_strokes" in res.info:
-            meta["nail_strokes"] = res.info["nail_strokes"]
-        (jdir / "plot.json").write_text(json.dumps(meta, indent=1, default=str))
-
+        job, stats, info = self._save_job(res, style, params, req.get("profile"), req["image"])
         return {
             "job": job,
             "paper": {"w": res.paper_w, "h": res.paper_h},
@@ -276,9 +278,16 @@ class App:
     def layout_load(self, req):
         """Parse a G-code (uploaded text or a previous render) into a placeable drawing."""
         from .layout import parse_gcode, normalise
+        can = False
         if req.get("job"):
             text = self.job_file(req["job"], "plot.gcode").read_text()
             name = req.get("name") or req["job"][:8]
+            try:
+                meta = json.loads(self.job_file(req["job"], "plot.json").read_text())
+                can = (meta.get("style") in ("stringart", "hatch", "scribble") and bool(meta.get("image"))
+                       and (self.work / "uploads" / f"{meta['image']}.png").exists())
+            except (OSError, ValueError):
+                pass
         else:
             text, name = req["gcode"], req.get("name") or "drawing"
         pls, info = parse_gcode(text)
@@ -297,7 +306,49 @@ class App:
             prev.append([round(c, 2) for pt in keep for c in pt])
         draw_mm = sum(math.dist(a, b) for pl in local for a, b in zip(pl, pl[1:]))
         return {"id": sid, "name": name, "w": w, "h": h, "polylines": prev,
-                "strokes": len(local), "draw_mm": draw_mm, "pen": info["pen"]}
+                "strokes": len(local), "draw_mm": draw_mm, "pen": info["pen"], "rerender": can}
+
+    def layout_rerender(self, req):
+        """Render a previous job again so it comes out `scale` times its original size, with
+        the same settings and photo: the pen and line spacing stay right on paper, instead of
+        shrinking (denser, darker) or enlarging (sparser) the finished lines. Returns a new
+        placeable drawing, like layout_load."""
+        from . import scribble as scr
+        job = req["job"]
+        scale = float(req["scale"])
+        if not 0.05 <= scale <= 20:
+            raise ValueError("scale out of range")
+        meta = json.loads(self.job_file(job, "plot.json").read_text())
+        style = meta.get("style")
+        if style not in ("stringart", "hatch", "scribble") or not meta.get("image"):
+            raise ValueError("this drawing can't be rendered again (made before photos were remembered, "
+                             "or not from a photo)")
+        img = self.image_path(meta["image"])          # FileNotFoundError if the photo was deleted
+        cls, build = pipeline.STYLES[style]
+        params = dict(meta.get("params") or {})        # already converted by _config when first rendered
+        mask = self.mask_path(meta["image"])
+        params["importance_mask"] = str(mask) if mask.exists() else None
+        cfg = pipeline.config_from_dict(cls, params)
+        # big page, no padding: the layout page places the result, the page itself doesn't matter
+        page = dict(paper="A3", portrait=True, padding_mm=0)
+        if style == "scribble":
+            pix = scr.load_gray(str(img), cfg)
+            mm_px, rot, _, _ = scr.paper_fit(*pix.shape, cfg)
+            params.update(page, size_mm=max(pix.shape) * mm_px * scale, rotate="90" if rot else "none")
+            if not params.get("dpi"):             # pixel mode: keep the original mm per pixel
+                params["dpi"] = 25.4 / mm_px
+        else:
+            _, _, _, R = sa.layout(cfg)
+            params.update(page, diameter_mm=2 * R * scale)
+        cfg = pipeline.config_from_dict(cls, params)
+        with self.lock:
+            res = build(str(img), cfg)
+        new, _, _ = self._save_job(res, style, params, meta.get("profile"), meta["image"],
+                                   comment=f"re-rendered at {scale:.0%} for a sheet layout",
+                                   extra={"rerender_of": job})
+        out = self.layout_load({"job": new, "name": req.get("name")})
+        out["job"] = new
+        return out
 
     def layout_export(self, req):
         from .gcode import write_gcode, write_svg, limit_ink
@@ -408,6 +459,8 @@ def make_handler(app):
                     self._send(200, app.render(json.loads(body)))
                 elif self.path == "/api/layout/load":
                     self._send(200, app.layout_load(json.loads(body)))
+                elif self.path == "/api/layout/rerender":
+                    self._send(200, app.layout_rerender(json.loads(body)))
                 elif self.path == "/api/layout/export":
                     self._send(200, app.layout_export(json.loads(body)))
                 elif self.path == "/api/suggest":

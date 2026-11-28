@@ -70,6 +70,26 @@ def test_compose_item_lands_in_its_frame_and_tone_thins(tmp_path):
     assert out["stats"]["draw_mm"] > 0
 
 
+def test_layout_rerender_at_placed_size(tmp_path):
+    from PIL import Image
+    from plotter.ui import App
+    yy, xx = np.mgrid[:300, :300]
+    img = (255 * (0.2 + 0.6 * (xx / 300))).astype(np.uint8)
+    Image.fromarray(img).save(tmp_path / "g.png")
+    app = App(tmp_path / "work")
+    up = app.upload((tmp_path / "g.png").read_bytes())
+    for style, params in (("hatch", {"diameter_mm": 80, "shape": "rect", "pen_mm": 0.3}),
+                          ("scribble", {"diameter_mm": 80, "dpi": 100, "pen_mm": 0.3, "workers": 1,
+                                        "hatch_mode": "ink", "rotate": "none"})):
+        r = app.render({"image": up["id"], "style": style, "params": params, "crop": [0, 0, 300, 300]})
+        a = app.layout_load({"job": r["job"]})
+        assert a["rerender"]
+        b = app.layout_rerender({"job": r["job"], "scale": 0.5})
+        assert abs(b["w"] / a["w"] - 0.5) < 0.05 and abs(b["h"] / a["h"] - 0.5) < 0.05, (style, a["w"], b["w"])
+        # same spacing on paper: a quarter of the area -> roughly a quarter of the line length
+        assert 0.15 < b["draw_mm"] / a["draw_mm"] < 0.4, (style, b["draw_mm"] / a["draw_mm"])
+
+
 def test_scribble_size_and_dpi_set_working_resolution(tmp_path):
     from PIL import Image
     from plotter import scribble as scr

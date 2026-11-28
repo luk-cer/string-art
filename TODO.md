@@ -230,8 +230,12 @@ Tests: `uv run --with pytest pytest -q tests` (35 tests).
       target × tone, so lower = lighter and sparser. Portrait, 1.0/0.6/0.3: string art 36/18/5 m,
       flow hatch 31/13/6 m, scribble ink 82/37/29 m, freehand 81/43/30 m. Squiggle/legacy floor at ~27 m
       = the contour lines (they follow edges; raise the gradient threshold for fewer).
-- [ ] Layout: re-render a placed drawing at its placed size (same params, size = placed size) instead
-      of scaling its G-code. plot.json now stores the image id. (Compose covers the new-photo case.)
+- [x] Scribble contour spacing in mm on paper (`contour_spacing_mm`, overrides cleanup_radius px),
+      `contour_min_gap` in pen widths (dark areas used to pack lines 1 px = 0.25 mm apart), tone divides
+      the gap. Portrait 150 mm: 50/100/200 dpi gave 17/26/39 m of contours, now 19/22/26 m; tone 0.3 → 13 m.
+- [x] Layout: "Render again at this size" - re-solves a placed render (same settings and photo from
+      plot.json, size × scale, same rotation; pixel-mode scribble keeps its mm/px) and puts it back at
+      100%, same centre. Scale 1.0 reproduces the original exactly; 0.6 → 35% of the line length.
 - [ ] Verify profile: Y direction (`flip_y`), origin, Z values, dwell. Record the working profile in the repo.
 - [ ] Time a real plot and compare with the estimate (it now models the planner; check it's honest).
 - [ ] Try on the machine, one at a time: `dwell_s 0` (stepper lift moves in order, no settle needed?),
@@ -278,8 +282,10 @@ Tests: `uv run --with pytest pytest -q tests` (35 tests).
       UI: red overlay on the photo, "Paint important areas" brush (erase, size, clear); the mask is
       stored next to the upload. Dashed warp portrait: face score 0.861 → 0.876 at 2 (0.887 at 8),
       whole picture 0.851 → 0.851 (0.841 at 8).
-- [ ] Importance for hatching/scribble: those styles don't optimise an error, so it needs its own
-      meaning (e.g. finer spacing / more contour detail inside the mask).
+- [x] Importance for hatching/scribble: hatch smooths direction + tone (1+k)× less inside the map;
+      scribble keeps edges down to threshold/√(1+k) (full 1+k drew skin-texture loops), traces them
+      first, wipe /(1+k). Total ink unchanged (portrait 66/66 m, 30.2/29.9 m). Face toggle per style
+      and per compose frame.
 - [ ] Include `chords`/`dashed` in the optimiser search; optimiser progress + cancel in the UI.
 - [ ] Two pens / grey levels (e.g. 0.1 mm grey pass + 0.3 mm black pass).
 
