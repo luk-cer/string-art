@@ -68,9 +68,19 @@ figcaption{font-size:12px;color:var(--muted);text-align:center}
   <div id="fitWarn" class="warn"></div>
   <div class="btns"><button class="btn ghost" id="rerenderBtn" disabled>Render again for printing</button></div>
 
-  <h2>3. Plate</h2>
+  <h2>3. Plate or free-standing</h2>
+  <div class="row"><label>Kind</label><select id="mode"><option value="plate">Lines on a plate (backlit)</option><option value="open">Free-standing (bridges)</option></select></div>
+  <div id="openOpts">
+    <div class="row"><label>Bridge width</label><input type="number" id="bridge_mm" min="0.4" max="3" step="0.1"></div>
+    <div class="row"><label>Tie to rim every (0 = off)</label><input type="number" id="anchor_mm" min="0" max="80" step="5"></div>
+    <div class="row"><label><input type="checkbox" id="web"> Add a white web too</label><span></span></div>
+    <div class="row" id="webRow"><label>Web cell size</label><input type="number" id="web_mm" min="4" max="40" step="1"></div>
+    <div class="hint">Free-standing: the white base layers hold the lines plus the shortest bridges that tie every separate piece
+      together and to the rim; the dark layers after the swap hold only the lines, so on a white wall the bridges all but vanish.
+      The web is a sparse white triangle grid under everything: stiffer, still faint on a white wall.</div>
+  </div>
   <div class="row"><label>Lines stand up</label><input type="number" id="line_height_mm" min="0.2" max="5" step="0.2"></div>
-  <div class="row"><label>Plate thickness</label><input type="number" id="base_mm" min="0.2" max="3" step="0.2"></div>
+  <div class="row"><label id="baseLbl">Plate thickness</label><input type="number" id="base_mm" min="0.2" max="3" step="0.2"></div>
   <div class="row"><label>Margin round the drawing</label><input type="number" id="margin_mm" min="0" max="30" step="0.5"></div>
   <div class="row"><label>Raised rim (0 = none)</label><input type="number" id="rim_mm" min="0" max="15" step="0.5"></div>
   <div class="row"><label>Hanging hole (0 = none)</label><input type="number" id="hole_mm" min="0" max="12" step="0.5"></div>
@@ -94,15 +104,29 @@ const store = {
   get(k, d){ try{ const v = localStorage.getItem("plotter3d."+k); return v ? JSON.parse(v) : d; }catch(e){ return d; } },
   set(k, v){ try{ localStorage.setItem("plotter3d."+k, JSON.stringify(v)); }catch(e){} },
 };
-const CFG_KEYS = {line_height_mm:1.2, base_mm:0.6, margin_mm:4, rim_mm:2.5, hole_mm:4, shape:"auto"};
+const CFG_KEYS = {mode:"plate", line_height_mm:1.2, base_mm:0.6, margin_mm:4, rim_mm:2.5, hole_mm:4, shape:"auto",
+                  bridge_mm:1.0, anchor_mm:20, web:false, web_mm:12};
+const MODE_DEFAULTS = {plate:{base_mm:0.6, line_height_mm:1.2}, open:{base_mm:0.4, line_height_mm:1.0}};
 const P = {cfg: {...CFG_KEYS, ...store.get("cfg", {})}, width: store.get("width", 0.7), size: null,
            job: null, src: null, busy: false};
 function setStats(h){ $("stats").innerHTML = h; }
 
-for(const k of Object.keys(CFG_KEYS)){
-  $(k).value = P.cfg[k];
-  $(k).onchange = e => { P.cfg[k] = k === "shape" ? e.target.value : +e.target.value; store.set("cfg", P.cfg); };
+function showMode(){
+  const open = P.cfg.mode === "open";
+  $("openOpts").style.display = open ? "" : "none";
+  $("webRow").style.display = P.cfg.web ? "" : "none";
+  $("baseLbl").textContent = open ? "White base layers" : "Plate thickness";
 }
+for(const k of Object.keys(CFG_KEYS)){
+  const el = $(k);
+  if(el.type === "checkbox") el.checked = !!P.cfg[k]; else el.value = P.cfg[k];
+  el.onchange = e => {
+    P.cfg[k] = el.type === "checkbox" ? el.checked : ["shape","mode"].includes(k) ? e.target.value : +e.target.value;
+    if(k === "mode") for(const [kk, v] of Object.entries(MODE_DEFAULTS[P.cfg.mode])){ P.cfg[kk] = v; $(kk).value = v; }
+    store.set("cfg", P.cfg); showMode();
+  };
+}
+showMode();
 $("width").value = P.width;
 $("width").onchange = e => { P.width = +e.target.value || 0.7; store.set("width", P.width); check(); };
 $("size").onchange = e => { P.size = +e.target.value; check(); };
@@ -168,14 +192,18 @@ $("buildBtn").onclick = async () => {
       body: JSON.stringify({job:P.job.job, scale:P.size / Math.max(s.w, s.h), cfg:{...P.cfg, line_width_mm:P.width}})});
     const b = await r.json(); if(!r.ok) throw new Error(b.error);
     const i = b.info;
-    $("stage").innerHTML = `<figure><img src="${b.previews.white}" alt=""><figcaption>All white PLA, backlit</figcaption></figure>
-      <figure><img src="${b.previews.dark}" alt=""><figcaption>Black lines after a filament swap, backlit</figcaption></figure>`;
+    $("stage").innerHTML = i.mode === "open"
+      ? `<figure><img src="${b.previews.wall}" alt=""><figcaption>On a white wall: white base, black lines after the swap</figcaption></figure>
+         <figure><img src="${b.previews.base}" alt=""><figcaption>White base layers: bridges${P.cfg.web ? " and web" : ""} in red</figcaption></figure>`
+      : `<figure><img src="${b.previews.white}" alt=""><figcaption>All white PLA, backlit</figcaption></figure>
+         <figure><img src="${b.previews.dark}" alt=""><figcaption>Black lines after a filament swap, backlit</figcaption></figure>`;
     const warn = [];
     if(!i.fits_bed) warn.push(`<span class="err">too big for the bed</span>`);
-    if(i.line_cover_pct > 60) warn.push(`<span class="err" title="Coverage follows how dark the photo is. Backlit, the glow comes from the gaps between lines: for a brighter piece lower the Darkness slider on the preview page and render again.">dark piece: lines cover ${i.line_cover_pct}%</span>`);
+    if(i.mode !== "open" && i.line_cover_pct > 60) warn.push(`<span class="err" title="Coverage follows how dark the photo is. Backlit, the glow comes from the gaps between lines: for a brighter piece lower the Darkness slider on the preview page and render again.">dark piece: lines cover ${i.line_cover_pct}%</span>`);
     setStats(`<span>${i.shape} <b>${i.size_mm[0]} × ${i.size_mm[1]} × ${i.size_mm[2]} mm</b></span>
       <span>swap at <b>Z ${i.swap_at_mm} mm</b></span>
-      <span>plate <b>${i.plate_g} g</b> · lines <b>${i.lines_g} g</b></span>
+      <span>${i.mode === "open" ? "white" : "plate"} <b>${i.plate_g} g</b> · ${i.mode === "open" ? "dark" : "lines"} <b>${i.lines_g} g</b></span>
+      ${i.mode === "open" ? `<span>${i.pieces} piece${i.pieces === 1 ? "" : "s"} joined by <b>${i.bridges}</b> bridges (longest ${i.longest_bridge_mm} mm)</span>` : ""}
       <span>lines cover <b>${i.line_cover_pct}%</b></span> ${warn.join(" ")}
       <span>${i.seconds} s</span>
       <a href="${b.files["print.3mf"]}">print.3mf</a><a href="${b.files["print.stl"]}">print.stl</a>

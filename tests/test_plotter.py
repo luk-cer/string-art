@@ -101,6 +101,24 @@ def test_print3d_plate_is_one_watertight_piece():
     assert png[:4] == b"\x89PNG"
 
 
+def test_print3d_open_mode_bridges_join_everything():
+    import pytest
+    pytest.importorskip("shapely")
+    pytest.importorskip("manifold3d")
+    from plotter import print3d as p3
+    # five separate short strokes inside a rectangle outline, none touching
+    strokes = [[(10 + 20 * i, 10), (20 + 20 * i, 30)] for i in range(5)] + [[(0, 0), (110, 0)], [(0, 40), (110, 40)]]
+    for web in (False, True):
+        cfg = p3.PrintConfig(mode="open", shape="rect", base_mm=0.4, line_height_mm=1.0, margin_mm=3,
+                             rim_mm=2, hole_mm=0, web=web, anchor_mm=25)
+        parts, info = p3.build(strokes, cfg)
+        assert parts["combined"].status().name == "NoError"
+        assert len(parts["plate"].decompose()) == 1                      # white base: one piece
+        assert len(parts["raised"].decompose()) > 1                      # dark layers: lines only
+        if not web:
+            assert info["pieces"] >= 6 and info["bridges"] >= info["pieces"] - 1
+
+
 def test_layout_rerender_at_placed_size(tmp_path):
     from PIL import Image
     from plotter.ui import App

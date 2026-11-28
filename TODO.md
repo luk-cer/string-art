@@ -358,5 +358,8 @@ G-code findings:
       previews. Needs `--extra print3d` (shapely, manifold3d). Re-render for printing sets pen = line
       width; string art also scales pixel_mm with the pen (0.7 pen at 0.6 mm cells stopped at 6 m).
 - [ ] Lithophane: thickness from the photo (0.6-3 mm), heightmap -> STL, same frame/lug.
-- [ ] Free-standing line art: a white bridge layer or two (connect all pieces: components +
-      shortest bridges + rim), then dark lines on top after a filament swap.
+- [x] Free-standing line art (mode "open"): white base layers = lines + rim + lug + shortest bridges
+      (Kruskal over gaps, widening search) + rim anchors every 20 mm; dark layers above the swap = lines
+      only. Optional white triangle web. Portrait 180 mm @ 0.7: string art 2 pieces / 31 bridges, hatch
+      10 / 39, scribble 34 / 63; longest bridge 5-12 mm. A single bridge held the whole drawing before
+      the rim anchors.

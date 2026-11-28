@@ -41,6 +41,16 @@ class PrintConfig:
     hole_mm: float = 4.0             # hanging hole in a lug at the top (0 = no lug)
     max_size_mm: float = 215.0       # bed limit (Creality K1C: 220 x 220)
     simplify_mm: float = 0.02
+    # mode "plate": the drawing raised on a solid plate (backlit piece).
+    # mode "open": no plate - free-standing line art. The white base layers (base_mm) hold the lines,
+    # rim, lug and the bridges that tie every piece together; the dark layers above the filament
+    # swap hold only the lines, so on a white wall the thin white bridges all but disappear.
+    mode: str = "plate"
+    bridge_mm: float = 1.0           # open: bridge width
+    web: bool = False                # open: also a sparse white triangle web under everything (stiffer)
+    web_mm: float = 12.0             # open: web cell size
+    web_width_mm: float = 0.6        # open: web line width
+    anchor_mm: float = 20.0          # open: also bridge the rim to the drawing every this many mm (0 = off)
 
 
 def _require():
@@ -88,6 +98,64 @@ def detect_shape(polylines):
     return "circle" if f is not None and f[3] < 0.02 else "rect"
 
 
+def connect(pieces, start_mm=2.0):
+    """Shortest bridges that join every polygon of `pieces` into one: Kruskal over the gaps
+    between pieces, searched in widening rounds (d, 2d, 4d ...) so only nearby pairs are
+    measured. Returns (bridge LineStrings, number of separate pieces before)."""
+    import shapely
+    from shapely import STRtree
+    polys = [g for g in (pieces.geoms if hasattr(pieces, "geoms") else [pieces])
+             if g.geom_type == "Polygon" and not g.is_empty]
+    n = len(polys)
+    if n < 2:
+        return [], n
+    arr = np.array(polys, dtype=object)
+    tree = STRtree(arr)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    bridges, comps, d = [], n, start_mm
+    while comps > 1 and d < 5000:
+        a, b = tree.query(arr, predicate="dwithin", distance=d)
+        keep = a < b
+        a, b = a[keep], b[keep]
+        if len(a):
+            roots = np.array([find(i) for i in range(n)])
+            keep = roots[a] != roots[b]
+            a, b = a[keep], b[keep]
+        if len(a):
+            dist = shapely.distance(arr[a], arr[b])
+            for k in np.argsort(dist, kind="stable"):
+                ra, rb = find(int(a[k])), find(int(b[k]))
+                if ra != rb:
+                    parent[ra] = rb
+                    comps -= 1
+                    bridges.append(shapely.shortest_line(arr[a[k]], arr[b[k]]))
+        d *= 2
+    return bridges, n
+
+
+def _web(inner, cell, width):
+    """Triangle lattice (lines at 0/60/120 deg, `cell` apart) clipped to `inner`."""
+    import shapely
+    from shapely.geometry import MultiLineString
+    x0, y0, x1, y1 = inner.bounds
+    c, rr = ((x0 + x1) / 2, (y0 + y1) / 2), math.hypot(x1 - x0, y1 - y0) / 2 + cell
+    segs = []
+    for ang in (0.0, 60.0, 120.0):
+        t = math.radians(ang)
+        ux, uy, nx, ny = math.cos(t), math.sin(t), -math.sin(t), math.cos(t)
+        for k in np.arange(-rr, rr + 1e-9, cell * math.sqrt(3) / 2):
+            px, py = c[0] + nx * k, c[1] + ny * k
+            segs.append([(px - ux * rr, py - uy * rr), (px + ux * rr, py + uy * rr)])
+    return shapely.buffer(MultiLineString(segs), width / 2, quad_segs=2).intersection(inner)
+
+
 def build(polylines, cfg: PrintConfig = PrintConfig()):
     """polylines: drawing in mm (y down, as on paper). Returns {'plate', 'raised', 'combined'}
     manifolds and an info dict."""
@@ -126,18 +194,47 @@ def build(polylines, cfg: PrintConfig = PrintConfig()):
     region = shapely.buffer(shapely.simplify(lines, cfg.simplify_mm), half_w, quad_segs=3)
     region = region.intersection(inner)
     raised = region if rim is None else region.union(rim)
-    body = outline
-    hole = None
+    hole = lug = ring = None
     if cfg.hole_mm > 0:
         r_lug = cfg.hole_mm / 2 + 3.0
         lug_c = (0.0, top + cfg.hole_mm / 2 + 0.5)
-        lug = Point(lug_c).buffer(r_lug, quad_segs=32).union(
-            box(-r_lug, top - 2.0, r_lug, lug_c[1]))              # neck into the plate
-        body = body.union(lug)
         hole = Point(lug_c).buffer(cfg.hole_mm / 2, quad_segs=32)
-        raised = raised.union(Point(lug_c).buffer(r_lug, quad_segs=32).difference(
-            Point(lug_c).buffer(r_lug - 1.6, quad_segs=32)))      # stiff ring round the hole
+        lug = Point(lug_c).buffer(r_lug, quad_segs=32).union(
+            box(-r_lug, top - 2.0, r_lug, lug_c[1]))              # neck into the plate / rim
+        ring = Point(lug_c).buffer(r_lug, quad_segs=32).difference(
+            Point(lug_c).buffer(r_lug - 1.6, quad_segs=32))       # stiff ring round the hole
+        raised = raised.union(ring)
+    extra = None
+    info_open = {}
+    if cfg.mode == "open":
+        body = raised if lug is None else raised.union(lug)
+        if cfg.web:
+            extra = _web(inner, cfg.web_mm, cfg.web_width_mm)
+            body = body.union(extra)
+        bridges, n_pieces = connect(body)
+        if cfg.anchor_mm > 0 and rim is not None and not region.is_empty:
+            # one bridge would hold the whole drawing: tie it to the rim all the way round
+            edge = inner.exterior
+            reach = cfg.margin_mm + cfg.line_width_mm + 15.0
+            for t in np.arange(0, edge.length, cfg.anchor_mm):
+                ln = shapely.shortest_line(edge.interpolate(t), region)
+                if 1e-6 < ln.length <= reach:
+                    bridges.append(ln)
+        if bridges:
+            bz = shapely.buffer(shapely.MultiLineString([list(b.coords) for b in bridges]),
+                                cfg.bridge_mm / 2, quad_segs=3)
+            body = body.union(bz)
+            extra = bz if extra is None else extra.union(bz)
+        lens = [b.length for b in bridges]
+        info_open = {"pieces": n_pieces, "bridges": len(bridges),
+                     "bridge_m": round(sum(lens) / 1000, 2),
+                     "longest_bridge_mm": round(max(lens), 1) if lens else 0.0}
+    else:
+        body = outline if lug is None else outline.union(lug)
+    if hole is not None:
         body, raised = body.difference(hole), raised.difference(hole)
+        if extra is not None:
+            extra = extra.difference(hole)
 
     plate = m3.CrossSection(_contours(body), m3.FillRule.EvenOdd).extrude(cfg.base_mm)
     up = m3.CrossSection(_contours(raised), m3.FillRule.EvenOdd).extrude(cfg.line_height_mm)
@@ -147,7 +244,7 @@ def build(polylines, cfg: PrintConfig = PrintConfig()):
     size = (bx1 - bx0, by1 - by0, cfg.base_mm + cfg.line_height_mm)
     cover = region.area / inner.area if inner.area else 0.0
     info = {
-        "shape": shape, "size_mm": [round(v, 1) for v in size],
+        "mode": cfg.mode, "shape": shape, "size_mm": [round(v, 1) for v in size],
         "swap_at_mm": round(cfg.base_mm, 2),
         "line_cover_pct": round(100 * cover, 1),
         "plate_g": round(plate.volume() / 1000 * PLA_G_PER_CM3, 1),
@@ -155,8 +252,10 @@ def build(polylines, cfg: PrintConfig = PrintConfig()):
         "triangles": combined.num_tri(),
         "fits_bed": max(size[0], size[1]) <= cfg.max_size_mm,
         "drawing_mm": [round(W, 1), round(H, 1)],
+        **info_open,
     }
-    return {"plate": plate, "raised": up, "combined": combined, "body2d": body, "raised2d": raised}, info
+    return {"plate": plate, "raised": up, "combined": combined, "body2d": body, "raised2d": raised,
+            "extra2d": extra}, info
 
 
 # ---------------------------------------------------------------------------- files
@@ -229,26 +328,40 @@ def _raster(geom, bounds, px_mm, shape):
 
 
 def thickness_map(parts, px_mm=0.1):
-    """Top view (y down): bool masks of the plate and of the raised part."""
+    """Top view (y down): bool masks of the base, the raised part and the bridges/web."""
     x0, y0, x1, y1 = parts["body2d"].bounds
     shape = (int(math.ceil((y1 - y0) / px_mm)) + 1, int(math.ceil((x1 - x0) / px_mm)) + 1)
     b = (x0, y0, x1, y1)
-    return _raster(parts["body2d"], b, px_mm, shape), _raster(parts["raised2d"], b, px_mm, shape)
+    extra = parts.get("extra2d")
+    ex = _raster(extra, b, px_mm, shape) if extra is not None and not extra.is_empty else np.zeros(shape, bool)
+    return _raster(parts["body2d"], b, px_mm, shape), _raster(parts["raised2d"], b, px_mm, shape), ex
 
 
-def preview_png(parts, cfg, dark_lines=False, px_mm=0.1, max_side=1400):
-    """Backlit look: light through white PLA falls off ~exp(-thickness / 0.8 mm); lines in
-    dark filament (after a swap) block it."""
+def preview_png(parts, cfg, dark_lines=False, px_mm=0.1, max_side=1400, view=None):
+    """plate mode: backlit look - light through white PLA falls off ~exp(-thickness / 0.8 mm);
+    lines in dark filament (after a swap) block it.
+    open mode: view "wall" = front view on a white wall (white base, dark lines);
+    view "base" = the white layer with bridges/web in red."""
     from PIL import Image
-    plate, raised = thickness_map(parts, px_mm)
-    t = plate * cfg.base_mm + raised * cfg.line_height_mm
-    light = np.exp(-t / 0.8)
-    if dark_lines:
-        light = np.where(raised, 0.03, light)
-    light = np.where(plate | raised, light / np.exp(-cfg.base_mm / 0.8), 1.0)   # plate = white
-    bg = ~(plate | raised)
-    rgb = np.stack([np.clip(light, 0, 1) * 255] * 3, -1).astype(np.uint8)
-    rgb[bg] = (40, 40, 46)                                                   # wall behind
+    plate, raised, extra = thickness_map(parts, px_mm)
+    if cfg.mode == "open":
+        rgb = np.empty(plate.shape + (3,), np.uint8)
+        if view == "base":
+            rgb[:] = (40, 40, 46)
+            rgb[plate] = (235, 235, 232)
+            rgb[extra & plate] = (220, 40, 40)
+        else:
+            rgb[:] = (226, 224, 219)                                   # wall
+            rgb[plate] = (247, 247, 244)                               # white PLA
+            rgb[raised] = (28, 28, 30)                                 # dark lines
+    else:
+        t = plate * cfg.base_mm + raised * cfg.line_height_mm
+        light = np.exp(-t / 0.8)
+        if dark_lines:
+            light = np.where(raised, 0.03, light)
+        light = np.where(plate | raised, light / np.exp(-cfg.base_mm / 0.8), 1.0)   # plate = white
+        rgb = np.stack([np.clip(light, 0, 1) * 255] * 3, -1).astype(np.uint8)
+        rgb[~(plate | raised)] = (40, 40, 46)                                       # wall behind
     im = Image.fromarray(rgb)
     im.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
     buf = io.BytesIO()

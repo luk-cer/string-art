@@ -376,8 +376,10 @@ class App:
             (jdir / "print_lines.stl").write_bytes(p3.stl_bytes(parts["raised"]))
             (jdir / "print.3mf").write_bytes(p3.threemf_bytes(
                 [("plate", parts["plate"], "#F4F4F0"), ("lines", parts["raised"], "#1E1E1E")]))
-            prev = {k: "data:image/png;base64," + base64.b64encode(p3.preview_png(parts, cfg, dark_lines=d)).decode()
-                    for k, d in (("white", False), ("dark", True))}
+            views = ((("wall", dict(view="wall")), ("base", dict(view="base"))) if cfg.mode == "open" else
+                     (("white", dict(dark_lines=False)), ("dark", dict(dark_lines=True))))
+            prev = {k: "data:image/png;base64," + base64.b64encode(p3.preview_png(parts, cfg, **kw)).decode()
+                    for k, kw in views}
         info = {k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in info.items()}
         info["seconds"] = round(time.time() - t0, 1)
         return {"info": info, "previews": prev,
