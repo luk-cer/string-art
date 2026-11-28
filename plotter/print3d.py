@@ -55,6 +55,8 @@ class PrintConfig:
     web_mm: float = 12.0             # open: web cell size
     web_width_mm: float = 0.6        # open: web line width
     anchor_mm: float = 20.0          # open: also bridge the rim to the drawing every this many mm (0 = off)
+    fill: str = "lines"              # lines: print the lines | gaps: print the space between them, the
+                                     # lines stay empty (grooves on a plate, slots when free-standing)
     light_lines: bool = False        # colours: False = dark lines on a white base, True = white lines on a
                                      # dark base (for drawings rendered with invert) - previews and 3MF colours
 
@@ -184,8 +186,13 @@ def build(polylines, cfg: PrintConfig = PrintConfig()):
         if f is not None and f[3] < 0.05:
             cx, cy = f[0], f[1]
     lines = MultiLineString([[(x - cx, cy - y) for x, y in pl] for pl in pls])
-    model_w = max(cfg.line_width_mm - cfg.line_spread_mm, cfg.min_feature_mm)
-    printed_w = model_w + cfg.line_spread_mm          # = line_width_mm unless it was too thin to model
+    gaps = cfg.fill == "gaps"
+    if gaps:   # the filled gaps spread into the slots: model the slots wider so they print at line_width
+        model_w = cfg.line_width_mm + cfg.line_spread_mm
+        printed_w = cfg.line_width_mm
+    else:      # the lines spread: model them narrower (never under what the slicer prints)
+        model_w = max(cfg.line_width_mm - cfg.line_spread_mm, cfg.min_feature_mm)
+        printed_w = model_w + cfg.line_spread_mm
     half_w = model_w / 2
     pad = cfg.margin_mm + half_w + cfg.rim_mm
     if shape == "circle":
@@ -201,7 +208,14 @@ def build(polylines, cfg: PrintConfig = PrintConfig()):
 
     region = shapely.buffer(shapely.simplify(lines, cfg.simplify_mm), half_w, quad_segs=3)
     region = region.intersection(inner)
-    raised = region if rim is None else region.union(rim)
+    if gaps:
+        filled = inner.difference(region)
+        speck = max(0.3, 2 * cfg.min_feature_mm ** 2)     # gaps too small to print are left out
+        keep = [g for g in getattr(filled, "geoms", [filled]) if g.geom_type == "Polygon" and g.area >= speck]
+        top2d = shapely.MultiPolygon(keep) if keep else filled
+    else:
+        top2d = region
+    raised = top2d if rim is None else top2d.union(rim)
     hole = lug = ring = None
     if cfg.hole_mm > 0:
         r_lug = cfg.hole_mm / 2 + 3.0
@@ -220,7 +234,7 @@ def build(polylines, cfg: PrintConfig = PrintConfig()):
             extra = _web(inner, cfg.web_mm, cfg.web_width_mm)
             body = body.union(extra)
         bridges, n_pieces = connect(body)
-        if cfg.anchor_mm > 0 and rim is not None and not region.is_empty:
+        if not gaps and cfg.anchor_mm > 0 and rim is not None and not region.is_empty:   # (gaps: fill meets the rim)
             # one bridge would hold the whole drawing: tie it to the rim all the way round
             edge = inner.exterior
             reach = cfg.margin_mm + cfg.line_width_mm + 15.0
@@ -251,9 +265,11 @@ def build(polylines, cfg: PrintConfig = PrintConfig()):
     bx0, by0, bx1, by1 = body.bounds
     size = (bx1 - bx0, by1 - by0, cfg.base_mm + cfg.line_height_mm)
     # coverage as printed: each edge moves out by spread/2 (area + boundary length * spread/2)
-    cover = min(1.0, (region.area + region.boundary.length * cfg.line_spread_mm / 2) / inner.area) if inner.area else 0.0
+    sgn = -1 if gaps else 1                        # gaps: the fill spreads into the slots
+    cover = (min(1.0, max(0.0, region.area + sgn * region.boundary.length * cfg.line_spread_mm / 2) / inner.area)
+             if inner.area else 0.0)
     info = {
-        "mode": cfg.mode, "shape": shape, "size_mm": [round(v, 1) for v in size],
+        "mode": cfg.mode, "fill": cfg.fill, "shape": shape, "size_mm": [round(v, 1) for v in size],
         "swap_at_mm": round(cfg.base_mm, 2),
         "line_cover_pct": round(100 * cover, 1),
         "model_width_mm": round(model_w, 3), "printed_width_mm": round(printed_w, 3),
@@ -347,39 +363,72 @@ def thickness_map(parts, px_mm=0.1):
     return _raster(parts["body2d"], b, px_mm, shape), _raster(parts["raised2d"], b, px_mm, shape), ex
 
 
-def preview_png(parts, cfg, dark_lines=False, px_mm=0.1, max_side=1400, view=None):
-    """plate mode: backlit look - light through white PLA falls off ~exp(-thickness / 0.8 mm);
-    lines in dark filament (after a swap) block it.
-    open mode: view "wall" = front view on a white wall (white base, dark lines);
-    view "base" = the white layer with bridges/web in red."""
+LIGHT, DARK = (247, 247, 244), (28, 28, 30)
+
+
+def colours(cfg):
+    """(base filament, top filament, line colour, background colour) as RGB. The lines are
+    whatever shows the line colour: the top layers (fill=lines) or the base seen through the
+    empty lines (fill=gaps)."""
+    line_c, bg_c = (LIGHT, DARK) if cfg.light_lines else (DARK, LIGHT)
+    base_c, top_c = (line_c, bg_c) if cfg.fill == "gaps" else (bg_c, line_c)
+    return base_c, top_c, line_c, bg_c
+
+
+def preview_views(cfg):
+    """[(key, kwargs for preview_png, caption)] that make sense for this config."""
+    base_c, top_c, line_c, bg_c = colours(cfg)
+    name = lambda c: "white" if c == LIGHT else "dark"
+    if cfg.mode == "open":
+        wall = name(bg_c) if cfg.fill == "lines" else name(line_c)
+        what = (f"{name(line_c)} lines on {name(bg_c)}" if cfg.fill == "lines" else
+                f"{name(bg_c)} fill, the lines are slots: the {wall} wall shows through")
+        return [("wall", dict(view="wall"), f"On a {wall} wall: {what}"),
+                ("base", dict(view="base"), f"Base layers ({name(base_c)}): bridges{' and web' if cfg.web else ''} in red")]
+    out = [("front", dict(view="front"), f"Front-lit: {name(line_c)} lines on {name(bg_c)}"
+            + (" (grooves showing the base)" if cfg.fill == "gaps" else ""))]
+    if base_c == LIGHT:
+        out.append(("backlit", dict(view="backlit"), "Backlit" + (": the thin grooves glow, so the lines show bright"
+                                                                    if cfg.fill == "gaps" else "")))
+    else:
+        out.append(("backlit", dict(view="backlit", single=True),
+                    "Backlit, printed all in white (a dark base would block the light)"))
+    return out
+
+
+def preview_png(parts, cfg, px_mm=0.1, max_side=1400, view="front", single=False, **_):
+    """view: front / wall (front-lit, on a wall), base (base layers, bridges/web in red),
+    backlit (light through white PLA falls off ~exp(-thickness / 0.8 mm); dark filament
+    blocks it; single = everything printed in white)."""
     from PIL import Image
     plate, raised, extra = thickness_map(parts, px_mm)
     r = cfg.line_spread_mm / 2 / px_mm
-    if r >= 0.5:                                  # show lines at their printed (spread) width
+    if r >= 0.5:                                  # show the top at its printed (spread) width
         from scipy.ndimage import binary_dilation
         k = int(math.ceil(r))
         yy, xx = np.mgrid[-k:k + 1, -k:k + 1]
         raised = binary_dilation(raised, structure=xx * xx + yy * yy <= r * r) & plate
-    light, dark = (247, 247, 244), (28, 28, 30)
-    base_c, line_c, wall_c = (dark, light, (52, 52, 56)) if cfg.light_lines else (light, dark, (226, 224, 219))
-    if cfg.mode == "open" or view == "front":
-        rgb = np.empty(plate.shape + (3,), np.uint8)
-        if view == "base":
-            rgb[:] = (226, 224, 219) if cfg.light_lines else (40, 40, 46)
-            rgb[plate] = base_c
-            rgb[extra & plate] = (220, 40, 40)
-        else:
-            rgb[:] = wall_c                                            # wall
-            rgb[plate] = base_c                                        # base filament
-            rgb[raised] = line_c                                       # lines after the swap
-    else:
+    base_c, top_c, line_c, bg_c = colours(cfg)
+    rgb = np.empty(plate.shape + (3,), np.uint8)
+    if view == "base":
+        rgb[:] = (226, 224, 219) if base_c == DARK else (40, 40, 46)
+        rgb[plate] = base_c
+        rgb[extra & plate] = (220, 40, 40)
+    elif view == "backlit":
         t = plate * cfg.base_mm + raised * cfg.line_height_mm
-        light = np.exp(-t / 0.8)
-        if dark_lines:
-            light = np.where(raised, 0.03, light)
-        light = np.where(plate | raised, light / np.exp(-cfg.base_mm / 0.8), 1.0)   # plate = white
-        rgb = np.stack([np.clip(light, 0, 1) * 255] * 3, -1).astype(np.uint8)
-        rgb[~(plate | raised)] = (40, 40, 46)                                       # wall behind
+        light = np.exp(-t / 0.8) / np.exp(-cfg.base_mm / 0.8)
+        if not single:
+            if top_c == DARK:
+                light = np.where(raised, 0.03, light)
+            if base_c == DARK:
+                light = np.where(plate, 0.03, light)
+        rgb[:] = (np.clip(light, 0, 1)[..., None] * 255).astype(np.uint8)
+        rgb[~(plate | raised)] = (40, 40, 46)                         # wall behind
+    else:
+        wall = (bg_c if cfg.fill == "lines" else line_c) if cfg.mode == "open" else None
+        rgb[:] = (226, 224, 219) if wall == LIGHT else (52, 52, 56) if wall == DARK else (128, 128, 132)
+        rgb[plate] = base_c
+        rgb[raised] = top_c
     im = Image.fromarray(rgb)
     im.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
     buf = io.BytesIO()

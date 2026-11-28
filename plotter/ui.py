@@ -374,16 +374,17 @@ class App:
             (jdir / "print.stl").write_bytes(p3.stl_bytes(parts["combined"]))
             (jdir / "print_plate.stl").write_bytes(p3.stl_bytes(parts["plate"]))
             (jdir / "print_lines.stl").write_bytes(p3.stl_bytes(parts["raised"]))
-            base_c, line_c = ("#1E1E1E", "#F4F4F0") if cfg.light_lines else ("#F4F4F0", "#1E1E1E")
+            hexc = lambda c: "#%02X%02X%02X" % c
+            base_c, top_c, _, _ = p3.colours(cfg)
             (jdir / "print.3mf").write_bytes(p3.threemf_bytes(
-                [("plate", parts["plate"], base_c), ("lines", parts["raised"], line_c)]))
-            views = ((("wall", dict(view="wall")), ("base", dict(view="base"))) if cfg.mode == "open" else
-                     (("front", dict(view="front")), ("white", dict(dark_lines=False))) if cfg.light_lines else
-                     (("white", dict(dark_lines=False)), ("dark", dict(dark_lines=True))))
-            prev = {k: "data:image/png;base64," + base64.b64encode(p3.preview_png(parts, cfg, **kw)).decode()
-                    for k, kw in views}
+                [("base", parts["plate"], hexc(base_c)), ("top", parts["raised"], hexc(top_c))]))
+            prev = [{"key": k, "caption": cap,
+                     "src": "data:image/png;base64," + base64.b64encode(p3.preview_png(parts, cfg, **kw)).decode()}
+                    for k, kw, cap in p3.preview_views(cfg)]
+            first, second = ("white" if c == p3.LIGHT else "dark" for c in (base_c, top_c))
         info = {k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in info.items()}
         info["seconds"] = round(time.time() - t0, 1)
+        info["first_filament"], info["second_filament"] = first, second
         return {"info": info, "previews": prev,
                 "files": {n: f"/api/file/{job}/{n}" for n in
                           ("print.stl", "print.3mf", "print_plate.stl", "print_lines.stl")}}

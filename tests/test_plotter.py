@@ -150,6 +150,15 @@ def test_print3d_open_mode_bridges_join_everything():
         assert len(parts["raised"].decompose()) > 1                      # dark layers: lines only
         if not web:
             assert info["pieces"] >= 6 and info["bridges"] >= info["pieces"] - 1
+    # fill the gaps: a grid of lines cuts the fill into islands; bridges across the slots hold them
+    grid = [[(0, y), (100, y)] for y in range(0, 101, 10)] + [[(x, 0), (x, 100)] for x in range(0, 101, 10)]
+    cfg = p3.PrintConfig(mode="open", fill="gaps", shape="rect", base_mm=0.4, line_height_mm=1.0,
+                         line_width_mm=0.8, line_spread_mm=0.2, margin_mm=3, rim_mm=2, hole_mm=0)
+    parts, info = p3.build(grid, cfg)
+    assert parts["combined"].status().name == "NoError"
+    assert info["pieces"] >= 100 and len(parts["plate"].decompose()) == 1
+    assert info["model_width_mm"] == 1.0 and info["printed_width_mm"] == 0.8       # slots modelled wider
+    assert p3.colours(cfg)[0] == p3.DARK                                           # base shows the lines
 
 
 def test_layout_rerender_at_placed_size(tmp_path):

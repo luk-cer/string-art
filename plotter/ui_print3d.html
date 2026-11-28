@@ -74,6 +74,8 @@ figcaption{font-size:12px;color:var(--muted);text-align:center}
   <h2>3. Plate or free-standing</h2>
   <div class="row"><label>Colours</label><select id="colours"><option value="dark">Dark lines on white</option><option value="light">White lines on dark</option></select></div>
   <div class="hint" id="colourHint"></div>
+  <div class="row"><label>Print</label><select id="fill"><option value="lines">the lines</option><option value="gaps">the gaps (lines stay empty)</option></select></div>
+  <div class="hint" id="fillHint"></div>
   <div class="row"><label>Kind</label><select id="mode"><option value="plate">Lines on a plate (backlit)</option><option value="open">Free-standing (bridges)</option></select></div>
   <div id="openOpts">
     <div class="row"><label>Bridge width</label><input type="number" id="bridge_mm" min="0.4" max="3" step="0.1"></div>
@@ -110,7 +112,7 @@ const store = {
   get(k, d){ try{ const v = localStorage.getItem("plotter3d."+k); return v ? JSON.parse(v) : d; }catch(e){ return d; } },
   set(k, v){ try{ localStorage.setItem("plotter3d."+k, JSON.stringify(v)); }catch(e){} },
 };
-const CFG_KEYS = {colours:"dark", mode:"plate", line_height_mm:1.2, base_mm:0.6, margin_mm:4, rim_mm:2.5, hole_mm:4, shape:"auto",
+const CFG_KEYS = {colours:"dark", fill:"lines", mode:"plate", line_height_mm:1.2, base_mm:0.6, margin_mm:4, rim_mm:2.5, hole_mm:4, shape:"auto",
                   bridge_mm:1.0, anchor_mm:20, web:false, web_mm:12};
 const MODE_DEFAULTS = {plate:{base_mm:0.6, line_height_mm:1.2}, open:{base_mm:0.4, line_height_mm:1.0}};
 const P = {cfg: {...CFG_KEYS, ...store.get("cfg", {})}, width: store.get("width", 0.7), size: null,
@@ -121,10 +123,16 @@ function showMode(){
   const open = P.cfg.mode === "open";
   $("openOpts").style.display = open ? "" : "none";
   $("webRow").style.display = P.cfg.web ? "" : "none";
-  const light = P.cfg.colours === "light";
+  const light = P.cfg.colours === "light", gaps = P.cfg.fill === "gaps";
+  const lineC = light ? "white" : "black", bgC = light ? "black" : "white";
   $("baseLbl").textContent = open ? "Base layers" : "Plate thickness";
-  $("baseColour").textContent = light ? "black (dark)" : "white";
-  $("lineColour").textContent = light ? "white" : "black";
+  $("baseColour").textContent = gaps ? lineC : bgC;            // the base shows through empty lines
+  $("lineColour").textContent = gaps ? bgC : lineC;
+  $("fillHint").textContent = gaps
+    ? (open ? "The gaps are printed and the lines are slots through the piece, so the wall shows through as the lines (hang it on a "
+              + lineC + " wall). Islands between lines are held by short bridges across the slots in the base layers."
+            : "The gaps are printed on top and the lines are grooves down to the " + lineC + " base. Backlit (all white), the thin grooves glow: the lines show bright.")
+    : "The lines are printed; the space between them stays " + (open ? "empty." : "the plate.");
   $("colourHint").textContent = light
     ? "White lines on a dark base: use a drawing rendered with Invert (preview page), so lines gather where the photo is bright. Plate kind: hang it front-lit, not backlit."
     : "Dark lines on a white base. A drawing rendered with Invert switches this automatically.";
@@ -133,9 +141,9 @@ for(const k of Object.keys(CFG_KEYS)){
   const el = $(k);
   if(el.type === "checkbox") el.checked = !!P.cfg[k]; else el.value = P.cfg[k];
   el.onchange = e => {
-    P.cfg[k] = el.type === "checkbox" ? el.checked : ["shape","mode","colours"].includes(k) ? e.target.value : +e.target.value;
+    P.cfg[k] = el.type === "checkbox" ? el.checked : ["shape","mode","colours","fill"].includes(k) ? e.target.value : +e.target.value;
     if(k === "mode") for(const [kk, v] of Object.entries(MODE_DEFAULTS[P.cfg.mode])){ P.cfg[kk] = v; $(kk).value = v; }
-    store.set("cfg", P.cfg); showMode();
+    store.set("cfg", P.cfg); showMode(); check();
   };
 }
 showMode();
@@ -144,7 +152,8 @@ P.spread = store.get("spread", 0.15); $("spread").value = P.spread;
 $("spread").onchange = e => { P.spread = Math.max(0, +e.target.value || 0); store.set("spread", P.spread); check(); };
 const MIN_FEATURE = 0.42;
 // width the lines really end up: modelled width (never under what the slicer prints) + spread
-const printedW = () => Math.max(P.width, MIN_FEATURE + P.spread);
+// gaps: the empty lines come out exactly line width (the slots are modelled wider by the spread)
+const printedW = () => P.cfg.fill === "gaps" ? P.width : Math.max(P.width, MIN_FEATURE + P.spread);
 $("width").onchange = e => { P.width = +e.target.value || 0.7; store.set("width", P.width); check(); };
 $("size").onchange = e => { P.size = +e.target.value; check(); };
 
@@ -175,8 +184,8 @@ function check(){
   const s = P.src, j = P.job;
   $("buildBtn").disabled = P.busy || !s;
   $("rerenderBtn").disabled = true; $("fitWarn").textContent = ""; $("selInfo").textContent = "";
-  const pw = printedW(), mw = pw - P.spread;
-  $("widthInfo").textContent = `Modelled ${mw.toFixed(2)} mm → prints about ${pw.toFixed(2)} mm` +
+  const pw = printedW(), mw = P.cfg.fill === "gaps" ? pw + P.spread : pw - P.spread;
+  $("widthInfo").textContent = `${P.cfg.fill === "gaps" ? "Empty lines (slots/grooves) modelled" : "Modelled"} ${mw.toFixed(2)} mm → prints about ${pw.toFixed(2)} mm` +
     (pw > P.width + 1e-6 ? ` (can't model thinner than ${MIN_FEATURE} mm)` : "") + ".";
   if(!s) return;
   const cur = Math.max(s.w, s.h), scale = P.size / cur, pen = +j.pen_mm || 0;
@@ -214,27 +223,20 @@ $("buildBtn").onclick = async () => {
         cfg:{...P.cfg, colours:undefined, light_lines:P.cfg.colours === "light", line_width_mm:P.width, line_spread_mm:P.spread, min_feature_mm:MIN_FEATURE}})});
     const b = await r.json(); if(!r.ok) throw new Error(b.error);
     const i = b.info;
-    const lt = P.cfg.colours === "light";
-    $("stage").innerHTML = i.mode === "open"
-      ? `<figure><img src="${b.previews.wall}" alt=""><figcaption>On a ${lt ? "dark" : "white"} wall: ${lt ? "dark base, white" : "white base, black"} lines after the swap</figcaption></figure>
-         <figure><img src="${b.previews.base}" alt=""><figcaption>Base layers: bridges${P.cfg.web ? " and web" : ""} in red</figcaption></figure>`
-      : lt
-      ? `<figure><img src="${b.previews.front}" alt=""><figcaption>Front-lit: white lines on the dark plate</figcaption></figure>
-         <figure><img src="${b.previews.white}" alt=""><figcaption>(for comparison) all white PLA, backlit</figcaption></figure>`
-      : `<figure><img src="${b.previews.white}" alt=""><figcaption>All white PLA, backlit</figcaption></figure>
-         <figure><img src="${b.previews.dark}" alt=""><figcaption>Black lines after a filament swap, backlit</figcaption></figure>`;
+    $("stage").innerHTML = b.previews.map(v => `<figure><img src="${v.src}" alt=""><figcaption>${v.caption}</figcaption></figure>`).join("");
+    $("baseColour").textContent = i.first_filament; $("lineColour").textContent = i.second_filament;
     const warn = [];
     if(!i.fits_bed) warn.push(`<span class="err">too big for the bed</span>`);
-    if(i.mode !== "open" && i.line_cover_pct > 60) warn.push(`<span class="err" title="Coverage follows how dark the photo is. Backlit, the glow comes from the gaps between lines: for a brighter piece lower the Darkness slider on the preview page and render again.">dark piece: lines cover ${i.line_cover_pct}%</span>`);
+    if(i.mode !== "open" && i.fill !== "gaps" && i.line_cover_pct > 60) warn.push(`<span class="err" title="Coverage follows how dark the photo is. Backlit, the glow comes from the gaps between lines: for a brighter piece lower the Darkness slider on the preview page and render again.">dark piece: lines cover ${i.line_cover_pct}%</span>`);
     setStats(`<span>${i.shape} <b>${i.size_mm[0]} × ${i.size_mm[1]} × ${i.size_mm[2]} mm</b></span>
-      <span>swap at <b>Z ${i.swap_at_mm} mm</b></span>
-      <span>lines modelled <b>${i.model_width_mm}</b> → print ≈ <b>${i.printed_width_mm} mm</b></span>
-      <span>${i.mode === "open" ? "white" : "plate"} <b>${i.plate_g} g</b> · ${i.mode === "open" ? "dark" : "lines"} <b>${i.lines_g} g</b></span>
+      <span>${i.first_filament} → swap at <b>Z ${i.swap_at_mm} mm</b> → ${i.second_filament}</span>
+      <span>${i.fill === "gaps" ? "empty lines" : "lines"} modelled <b>${i.model_width_mm}</b> → print ≈ <b>${i.printed_width_mm} mm</b></span>
+      <span>${i.first_filament} <b>${i.plate_g} g</b> · ${i.second_filament} <b>${i.lines_g} g</b></span>
       ${i.mode === "open" ? `<span>${i.pieces} piece${i.pieces === 1 ? "" : "s"} joined by <b>${i.bridges}</b> bridges (longest ${i.longest_bridge_mm} mm)</span>` : ""}
       <span>lines cover <b>${i.line_cover_pct}%</b></span> ${warn.join(" ")}
       <span>${i.seconds} s</span>
       <a href="${b.files["print.3mf"]}">print.3mf</a><a href="${b.files["print.stl"]}">print.stl</a>
-      <a href="${b.files["print_plate.stl"]}">plate.stl</a><a href="${b.files["print_lines.stl"]}">lines.stl</a>`);
+      <a href="${b.files["print_plate.stl"]}">base.stl</a><a href="${b.files["print_lines.stl"]}">top.stl</a>`);
   }catch(e){ setStats(`<span class="err">${e.message}</span>`); }
   P.busy = false; check();
 };
