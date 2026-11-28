@@ -44,6 +44,7 @@ class HatchConfig:
     vignette: float = 0.0
     max_darkness: float = 1.0
     tone: float = 1.0                # overall darkness: <1 = lighter picture, fewer lines
+    invert: bool = False             # solve the negative: white lines on dark (pen or filament)
     edge_boost: float = 0.0
     # hatching
     cell_mm: float = 0.25             # field / occupancy raster resolution
@@ -505,6 +506,8 @@ def flow_hatch(image_path, cfg, progress=print):
 def _prepare_rect(image_path, cfg, size):
     from PIL import Image, ImageOps
     img = ImageOps.exif_transpose(Image.open(image_path)).convert("L")
+    if getattr(cfg, "invert", False):       # white lines on dark: density follows brightness
+        img = ImageOps.invert(img)
     x, y, w, h = cfg.crop or sa._auto_crop_box(img)
     img = img.crop((x, y, x + w, y + h)).resize((size, size), Image.Resampling.LANCZOS)
     g = np.asarray(img, dtype=float) / 255.0

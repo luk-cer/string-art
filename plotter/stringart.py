@@ -42,6 +42,7 @@ class StringArtConfig:
     min_skip: int = 15              # minimum nails between endpoints (no short edge chords)
     max_darkness: float = 0.9       # darkest target tone (1 = solid ink)
     tone: float = 1.0               # overall darkness: <1 = lighter picture, fewer lines
+    invert: bool = False            # solve the negative: white lines on dark (pen or filament)
     gamma: float = 1.0              # >1 lightens midtones, <1 darkens
     clahe: float = 0.02             # local contrast boost (0 = off); brings out eyes/mouth
     vignette: float = 0.0           # 0..1 fade target to white towards the rim (busy backgrounds)
@@ -92,6 +93,8 @@ def _auto_crop_box(gray):
 
 def prepare_target(image_path, cfg, size_px):
     img = ImageOps.exif_transpose(Image.open(image_path)).convert("L")
+    if getattr(cfg, "invert", False):       # white lines on dark: density follows brightness
+        img = ImageOps.invert(img)
     box = cfg.crop or _auto_crop_box(img)
     x, y, w, h = box
     img = img.crop((x, y, x + w, y + h)).resize((size_px, size_px), Image.Resampling.LANCZOS)

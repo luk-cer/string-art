@@ -51,6 +51,8 @@ class PrintConfig:
     web_mm: float = 12.0             # open: web cell size
     web_width_mm: float = 0.6        # open: web line width
     anchor_mm: float = 20.0          # open: also bridge the rim to the drawing every this many mm (0 = off)
+    light_lines: bool = False        # colours: False = dark lines on a white base, True = white lines on a
+                                     # dark base (for drawings rendered with invert) - previews and 3MF colours
 
 
 def _require():
@@ -344,16 +346,18 @@ def preview_png(parts, cfg, dark_lines=False, px_mm=0.1, max_side=1400, view=Non
     view "base" = the white layer with bridges/web in red."""
     from PIL import Image
     plate, raised, extra = thickness_map(parts, px_mm)
-    if cfg.mode == "open":
+    light, dark = (247, 247, 244), (28, 28, 30)
+    base_c, line_c, wall_c = (dark, light, (52, 52, 56)) if cfg.light_lines else (light, dark, (226, 224, 219))
+    if cfg.mode == "open" or view == "front":
         rgb = np.empty(plate.shape + (3,), np.uint8)
         if view == "base":
-            rgb[:] = (40, 40, 46)
-            rgb[plate] = (235, 235, 232)
+            rgb[:] = (226, 224, 219) if cfg.light_lines else (40, 40, 46)
+            rgb[plate] = base_c
             rgb[extra & plate] = (220, 40, 40)
         else:
-            rgb[:] = (226, 224, 219)                                   # wall
-            rgb[plate] = (247, 247, 244)                               # white PLA
-            rgb[raised] = (28, 28, 30)                                 # dark lines
+            rgb[:] = wall_c                                            # wall
+            rgb[plate] = base_c                                        # base filament
+            rgb[raised] = line_c                                       # lines after the swap
     else:
         t = plate * cfg.base_mm + raised * cfg.line_height_mm
         light = np.exp(-t / 0.8)

@@ -101,6 +101,32 @@ def test_print3d_plate_is_one_watertight_piece():
     assert png[:4] == b"\x89PNG"
 
 
+def test_invert_puts_lines_where_the_photo_is_bright(tmp_path):
+    from PIL import Image
+    from plotter import pipeline, stringart as sa, hatch as hz, scribble as scr
+    yy, xx = np.mgrid[:240, :240]
+    img = (255 * (0.15 + 0.7 * (xx / 240))).astype(np.uint8)          # dark left, bright right
+    Image.fromarray(img).save(tmp_path / "g.png")
+    path = str(tmp_path / "g.png")
+    builds = {
+        "stringart": lambda inv: pipeline.build_stringart(path, sa.StringArtConfig(
+            pen_mm=0.3, diameter_mm=80, nails=120, max_lines=400, refine=0, importance=0, invert=inv)),
+        "hatch": lambda inv: pipeline.build_hatch(path, hz.HatchConfig(pen_mm=0.3, diameter_mm=80, invert=inv)),
+        "scribble": lambda inv: pipeline.build_scribble(path, scr.ScribbleConfig(
+            size_mm=80, dpi=60, pen_mm=0.3, hatch_mode="ink", main_lines=False, invert=inv, rotate="none")),
+    }
+    for name, f in builds.items():
+        share = []
+        for inv in (False, True):
+            r = f(inv)
+            seg = [(np.asarray(p)[:-1], np.asarray(p)[1:]) for p in r.polylines if len(p) > 1]
+            a = np.concatenate([s[0] for s in seg]); b = np.concatenate([s[1] for s in seg])
+            mid, ln = (a[:, 0] + b[:, 0]) / 2, np.hypot(*(b - a).T)
+            cx = (mid.min() + mid.max()) / 2
+            share.append(ln[mid > cx].sum() / ln.sum())                    # ink on the bright half
+        assert share[0] < 0.45 and share[1] > 0.55, (name, share)
+
+
 def test_print3d_open_mode_bridges_join_everything():
     import pytest
     pytest.importorskip("shapely")

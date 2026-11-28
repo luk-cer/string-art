@@ -168,6 +168,7 @@ const COMMON = [
   {k:"padding_mm", label:"Padding", unit:"mm", min:0, max:40, step:1, v:10},
   {k:"diameter_mm", label:"Size on paper (0 = fit)", unit:"mm", min:0, max:400, step:5, v:0, not:["radon"]},
   {k:"tone", label:"Darkness (lower = lighter, sparser lines)", min:0.2, max:1.5, step:0.05, v:1, not:["radon"]},
+  {k:"invert", label:"Invert: white lines on dark", type:"check", v:false, not:["radon"]},
 ];
 // What each setting does. Key "style:param" overrides plain "param".
 const HELP = {
@@ -176,6 +177,7 @@ const HELP = {
   portrait: "Turn the paper upright (tall) instead of landscape.",
   pen_mm: "Your pen's line width. The algorithms model real ink with it: a wider pen reaches darkness with fewer lines.",
   padding_mm: "Blank margin kept around the drawing on every side.",
+  invert: "Solve the photo's negative, for white lines on a dark background (white pen on black paper, or white filament over a dark base in the 3D print): lines gather where the photo is bright instead of dark. The preview shows it white on black. Darkness then means how much white.",
   tone: "Overall darkness of the drawing. Every style aims for the photo's darkness × this, so 0.6 gives a lighter picture with fewer, sparser lines (and a shorter plot); above 1 pushes darker. Scribble: scales every tone mode and the legacy hatching ink limit, and widens the contour line spacing (gap ÷ darkness), so contours thin out too.",
   diameter_mm: "How big the drawing will be on paper: circle diameter, or the longer side of a rectangle. 0 = as big as fits inside the padding. Render at the size you will plot: line density and darkness are computed for this size and the pen width, so shrinking a finished drawing later (e.g. on the layout page) makes it darker.",
 
@@ -915,7 +917,7 @@ async function render(){
       body: JSON.stringify({image:S.image.id, crop:S.crop, style:S.style, params, profile})});
     const j = await r.json(); if(!r.ok) throw new Error(j.error);
     if(seq !== renderSeq) return;
-    S.result = j; $("anim").value = 1000; $("empty").style.display = "none";
+    S.result = j; S.result.inverted = !!params.invert; $("anim").value = 1000; $("empty").style.display = "none";
     showStats(); setView(S.view); fit();
   }catch(e){
     $("stats").innerHTML = `<span class="err">${e.message}</span>`;
@@ -964,7 +966,8 @@ function draw(){
   if(!S.result) return;
   vx.setTransform(dpr*cam.scale,0,0,dpr*cam.scale,dpr*cam.ox,dpr*cam.oy);
   const {w,h} = S.result.paper, pls = S.result.polylines;
-  vx.fillStyle = "#fff"; vx.shadowColor = "rgba(0,0,0,.25)"; vx.shadowBlur = 12;
+  const inv = S.result.inverted;          // white lines on dark paper / filament
+  vx.fillStyle = inv ? "#141414" : "#fff"; vx.shadowColor = "rgba(0,0,0,.25)"; vx.shadowBlur = 12;
   vx.fillRect(0,0,w,h); vx.shadowBlur = 0;
 
   const total = pls.length, upto = Math.round(total * $("anim").value / 1000);
@@ -977,7 +980,7 @@ function draw(){
     vx.arc((b[0]+b[2])/2, (b[1]+b[3])/2, Math.max(b[2]-b[0], b[3]-b[1])/2, 0, Math.PI*2); vx.stroke(); vx.setLineDash([]);
   }
 
-  vx.strokeStyle = "#111"; vx.lineCap = "round"; vx.lineJoin = "round";
+  vx.strokeStyle = inv ? "#f2f2ee" : "#111"; vx.lineCap = "round"; vx.lineJoin = "round";
   vx.lineWidth = S.result.pen_mm;     // true pen width in mm
   vx.beginPath();
   for(let i=0;i<upto;i++){
@@ -1049,6 +1052,7 @@ function setView(v){
   view.style.display = img ? "none" : "block";
   if(S.result){
     const t = S.result.images.target, s = S.result.images.simulation;
+    $("imgTarget").style.filter = $("imgSim").style.filter = S.result.inverted ? "invert(1)" : "";
     $("imgTarget").src = t || ""; $("imgTarget").parentElement.style.display = t ? "flex" : "none";
     $("imgSim").src = s || ""; $("imgSim").parentElement.style.display = (s && v === "sim") ? "flex" : "none";
     if(v === "sim" && !s) $("imgTarget").parentElement.querySelector("figcaption").textContent = "target (no simulation for this style)";

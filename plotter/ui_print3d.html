@@ -69,15 +69,17 @@ figcaption{font-size:12px;color:var(--muted);text-align:center}
   <div class="btns"><button class="btn ghost" id="rerenderBtn" disabled>Render again for printing</button></div>
 
   <h2>3. Plate or free-standing</h2>
+  <div class="row"><label>Colours</label><select id="colours"><option value="dark">Dark lines on white</option><option value="light">White lines on dark</option></select></div>
+  <div class="hint" id="colourHint"></div>
   <div class="row"><label>Kind</label><select id="mode"><option value="plate">Lines on a plate (backlit)</option><option value="open">Free-standing (bridges)</option></select></div>
   <div id="openOpts">
     <div class="row"><label>Bridge width</label><input type="number" id="bridge_mm" min="0.4" max="3" step="0.1"></div>
     <div class="row"><label>Tie to rim every (0 = off)</label><input type="number" id="anchor_mm" min="0" max="80" step="5"></div>
     <div class="row"><label><input type="checkbox" id="web"> Add a white web too</label><span></span></div>
     <div class="row" id="webRow"><label>Web cell size</label><input type="number" id="web_mm" min="4" max="40" step="1"></div>
-    <div class="hint">Free-standing: the white base layers hold the lines plus the shortest bridges that tie every separate piece
-      together and to the rim; the dark layers after the swap hold only the lines, so on a white wall the bridges all but vanish.
-      The web is a sparse white triangle grid under everything: stiffer, still faint on a white wall.</div>
+    <div class="hint">Free-standing: the base layers hold the lines plus the shortest bridges that tie every separate piece
+      together and to the rim; the layers after the swap hold only the lines, so on a wall the same colour as the base the bridges
+      all but vanish. The web is a sparse triangle grid in the base colour: stiffer, still faint.</div>
   </div>
   <div class="row"><label>Lines stand up</label><input type="number" id="line_height_mm" min="0.2" max="5" step="0.2"></div>
   <div class="row"><label id="baseLbl">Plate thickness</label><input type="number" id="base_mm" min="0.2" max="3" step="0.2"></div>
@@ -90,9 +92,10 @@ figcaption{font-size:12px;color:var(--muted);text-align:center}
   <div class="btns"><button class="btn" id="buildBtn" disabled>Make 3D files</button></div>
 
   <h2>Printing (Creality K1C)</h2>
-  <div class="hint">Open <b>print.3mf</b> (or print.stl) in Creality Print / OrcaSlicer and print it flat, in white or natural PLA.
-    For black lines on white: on the layer slider, add a <b>pause / filament change</b> at the first layer above the plate
-    (shown below as "swap at"), swap to black, resume. With a multi-colour unit, load the 3MF as one object with two parts and give each a filament.</div>
+  <div class="hint">Open <b>print.3mf</b> (or print.stl) in Creality Print / OrcaSlicer and print it flat, starting with the
+    <b id="baseColour">white</b> filament. On the layer slider add a <b>pause / filament change</b> at the first layer above the base
+    (shown below as "swap at"), change to <b id="lineColour">black</b>, resume. With a multi-colour unit, load the 3MF as one object
+    with two parts and give each a filament.</div>
 </aside>
 <main>
   <div id="stage"><div class="empty" id="empty">Pick a drawing, then press "Make 3D files".</div></div>
@@ -104,7 +107,7 @@ const store = {
   get(k, d){ try{ const v = localStorage.getItem("plotter3d."+k); return v ? JSON.parse(v) : d; }catch(e){ return d; } },
   set(k, v){ try{ localStorage.setItem("plotter3d."+k, JSON.stringify(v)); }catch(e){} },
 };
-const CFG_KEYS = {mode:"plate", line_height_mm:1.2, base_mm:0.6, margin_mm:4, rim_mm:2.5, hole_mm:4, shape:"auto",
+const CFG_KEYS = {colours:"dark", mode:"plate", line_height_mm:1.2, base_mm:0.6, margin_mm:4, rim_mm:2.5, hole_mm:4, shape:"auto",
                   bridge_mm:1.0, anchor_mm:20, web:false, web_mm:12};
 const MODE_DEFAULTS = {plate:{base_mm:0.6, line_height_mm:1.2}, open:{base_mm:0.4, line_height_mm:1.0}};
 const P = {cfg: {...CFG_KEYS, ...store.get("cfg", {})}, width: store.get("width", 0.7), size: null,
@@ -115,13 +118,19 @@ function showMode(){
   const open = P.cfg.mode === "open";
   $("openOpts").style.display = open ? "" : "none";
   $("webRow").style.display = P.cfg.web ? "" : "none";
-  $("baseLbl").textContent = open ? "White base layers" : "Plate thickness";
+  const light = P.cfg.colours === "light";
+  $("baseLbl").textContent = open ? "Base layers" : "Plate thickness";
+  $("baseColour").textContent = light ? "black (dark)" : "white";
+  $("lineColour").textContent = light ? "white" : "black";
+  $("colourHint").textContent = light
+    ? "White lines on a dark base: use a drawing rendered with Invert (preview page), so lines gather where the photo is bright. Plate kind: hang it front-lit, not backlit."
+    : "Dark lines on a white base. A drawing rendered with Invert switches this automatically.";
 }
 for(const k of Object.keys(CFG_KEYS)){
   const el = $(k);
   if(el.type === "checkbox") el.checked = !!P.cfg[k]; else el.value = P.cfg[k];
   el.onchange = e => {
-    P.cfg[k] = el.type === "checkbox" ? el.checked : ["shape","mode"].includes(k) ? e.target.value : +e.target.value;
+    P.cfg[k] = el.type === "checkbox" ? el.checked : ["shape","mode","colours"].includes(k) ? e.target.value : +e.target.value;
     if(k === "mode") for(const [kk, v] of Object.entries(MODE_DEFAULTS[P.cfg.mode])){ P.cfg[kk] = v; $(kk).value = v; }
     store.set("cfg", P.cfg); showMode();
   };
@@ -150,6 +159,7 @@ async function select(j){
     const r = await fetch("/api/layout/load", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({job:j.job})});
     const s = await r.json(); if(!r.ok) throw new Error(s.error);
     P.src = s; P.size = Math.round(Math.min(Math.max(s.w, s.h), 200)); $("size").value = P.size; setStats("");
+    P.cfg.colours = j.invert ? "light" : "dark"; $("colours").value = P.cfg.colours; store.set("cfg", P.cfg); showMode();
   }catch(e){ setStats(`<span class="err">${e.message}</span>`); }
   check();
 }
@@ -189,12 +199,17 @@ $("buildBtn").onclick = async () => {
   P.busy = true; check(); setStats("<span>building the 3D model…</span>");
   try{
     const r = await fetch("/api/print3d/build", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({job:P.job.job, scale:P.size / Math.max(s.w, s.h), cfg:{...P.cfg, line_width_mm:P.width}})});
+      body: JSON.stringify({job:P.job.job, scale:P.size / Math.max(s.w, s.h),
+        cfg:{...P.cfg, colours:undefined, light_lines:P.cfg.colours === "light", line_width_mm:P.width}})});
     const b = await r.json(); if(!r.ok) throw new Error(b.error);
     const i = b.info;
+    const lt = P.cfg.colours === "light";
     $("stage").innerHTML = i.mode === "open"
-      ? `<figure><img src="${b.previews.wall}" alt=""><figcaption>On a white wall: white base, black lines after the swap</figcaption></figure>
-         <figure><img src="${b.previews.base}" alt=""><figcaption>White base layers: bridges${P.cfg.web ? " and web" : ""} in red</figcaption></figure>`
+      ? `<figure><img src="${b.previews.wall}" alt=""><figcaption>On a ${lt ? "dark" : "white"} wall: ${lt ? "dark base, white" : "white base, black"} lines after the swap</figcaption></figure>
+         <figure><img src="${b.previews.base}" alt=""><figcaption>Base layers: bridges${P.cfg.web ? " and web" : ""} in red</figcaption></figure>`
+      : lt
+      ? `<figure><img src="${b.previews.front}" alt=""><figcaption>Front-lit: white lines on the dark plate</figcaption></figure>
+         <figure><img src="${b.previews.white}" alt=""><figcaption>(for comparison) all white PLA, backlit</figcaption></figure>`
       : `<figure><img src="${b.previews.white}" alt=""><figcaption>All white PLA, backlit</figcaption></figure>
          <figure><img src="${b.previews.dark}" alt=""><figcaption>Black lines after a filament swap, backlit</figcaption></figure>`;
     const warn = [];

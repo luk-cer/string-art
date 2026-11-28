@@ -136,6 +136,7 @@ class ScribbleConfig:
     # overall darkness: <1 = lighter picture, fewer tone lines (scales the tone target of every
     # tone mode and legacy_ink_cap; contour spacing is divided by it, see contour_spacing_mm)
     tone: float = 1.0
+    invert: bool = False                # solve the negative: white lines on dark (pen or filament)
     # contour spacing on paper. contour_spacing_mm: largest gap cleared around a contour line (light
     # areas; dark areas pack closer), in mm at the final size - overrides cleanup_radius (px), 0 = use it.
     # contour_min_gap: closest two contour lines may run, in pen widths (0 = original, down to 1 px).
@@ -472,7 +473,10 @@ def load_gray(image_path, cfg):
         s = cfg.max_side / max(img.size)
         img = img.resize((max(1, round(img.width * s)), max(1, round(img.height * s))),
                          Image.Resampling.LANCZOS)
-    return np.array(img.convert("L"), dtype=float) / 255
+    img = img.convert("L")
+    if getattr(cfg, "invert", False):       # white lines on dark: density follows brightness
+        img = ImageOps.invert(img)
+    return np.array(img, dtype=float) / 255
 
 
 class Scribble:

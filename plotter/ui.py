@@ -270,7 +270,7 @@ class App:
                 label += f" · {p['chords']}"
             if p.get("hatch_mode"):
                 label += f" · {p['hatch_mode']}"
-            out.append({"job": d.name, "label": label, "time": d.stat().st_mtime,
+            out.append({"job": d.name, "label": label, "time": d.stat().st_mtime, "invert": bool(p.get("invert")),
                         "minutes": st.get("est_minutes"), "pen_mm": (p.get("pen_mm") or None),
                         "svg": f"/api/file/{d.name}/plot.svg"})
         return out
@@ -374,9 +374,11 @@ class App:
             (jdir / "print.stl").write_bytes(p3.stl_bytes(parts["combined"]))
             (jdir / "print_plate.stl").write_bytes(p3.stl_bytes(parts["plate"]))
             (jdir / "print_lines.stl").write_bytes(p3.stl_bytes(parts["raised"]))
+            base_c, line_c = ("#1E1E1E", "#F4F4F0") if cfg.light_lines else ("#F4F4F0", "#1E1E1E")
             (jdir / "print.3mf").write_bytes(p3.threemf_bytes(
-                [("plate", parts["plate"], "#F4F4F0"), ("lines", parts["raised"], "#1E1E1E")]))
+                [("plate", parts["plate"], base_c), ("lines", parts["raised"], line_c)]))
             views = ((("wall", dict(view="wall")), ("base", dict(view="base"))) if cfg.mode == "open" else
+                     (("front", dict(view="front")), ("white", dict(dark_lines=False))) if cfg.light_lines else
                      (("white", dict(dark_lines=False)), ("dark", dict(dark_lines=True))))
             prev = {k: "data:image/png;base64," + base64.b64encode(p3.preview_png(parts, cfg, **kw)).decode()
                     for k, kw in views}

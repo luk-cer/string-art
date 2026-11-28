@@ -161,7 +161,7 @@ function overlaps(i){
 function styleParams(style){
   // preview page params for this style + its common settings; size/paper/shape are set per frame
   const p = {...uiGet("common", {}), ...uiGet("params." + style, {})};
-  for(const k of ["paper","portrait","padding_mm","diameter_mm","size_mm","pen_mm","tone","shape","crop","frame","_suggest"]) delete p[k];
+  for(const k of ["paper","portrait","padding_mm","diameter_mm","size_mm","pen_mm","tone","shape","crop","frame","_suggest","invert"]) delete p[k];
   return p;
 }
 function cropFor(it){
